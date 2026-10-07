@@ -162,12 +162,22 @@ jobs:
           for so in libbinder.so libutils.so libcutils.so libbase.so liblog.so libc++.so; do
             if adb pull "/system/lib64/$so" "devlibs/$so" >/dev/null 2>&1; then echo "PULL_OK $so ($(stat -c%s devlibs/$so) B)"; else echo "PULL_FAILED $so"; fi
           done
-          echo "=== (b) 取 AOSP 14 的 binder/utils 头（公开 Git，只临时 clone，不落仓） ==="
-          git clone --depth=1 -b android-14.0.0_r1 https://android.googlesource.com/platform/frameworks/native /tmp/fwnative 2>&1 | tail -2 || \
-          git clone --depth=1 -b android-14.0.0_r1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/frameworks/native /tmp/fwnative 2>&1 | tail -2 || true
+          echo "=== (b) 取 AOSP 14 的头（公开 Git，只临时 clone，不落仓） ==="
+          clone_aosp() {
+            git clone --depth=1 -b android-14.0.0_r1 "https://android.googlesource.com/platform/$1" "$2" 2>&1 | tail -1 || \
+            git clone --depth=1 -b android-14.0.0_r1 "https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/$1" "$2" 2>&1 | tail -1 || true
+          }
+          clone_aosp frameworks/native /tmp/fwnative
+          clone_aosp system/libbase   /tmp/fwbase
+          clone_aosp system/core      /tmp/fwcore
           INC=""
-          for d in /tmp/fwnative/libs/binder/include /tmp/fwnative/libs/utils/include /tmp/fwnative/libs/nativebase/include; do
-            [ -d "$d" ] && INC="$INC -I$d" && echo "INC_OK $d" || echo "INC_MISSING $d"
+          for d in /tmp/fwnative/libs/binder/include \
+                   /tmp/fwnative/libs/nativebase/include \
+                   /tmp/fwbase/include \
+                   /tmp/fwcore/libutils/include \
+                   /tmp/fwcore/libsystem/include \
+                   /tmp/fwcore/libcutils/include ; do
+            if [ -d "$d" ]; then INC="$INC -I$d"; echo "INC_OK $d"; else echo "INC_MISSING $d"; fi
           done
           echo "INC=$INC"
           echo "=== (c) 编译（--no-undefined：链接期就把未解析符号暴露出来） ==="
