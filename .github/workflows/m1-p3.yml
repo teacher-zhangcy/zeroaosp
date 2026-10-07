@@ -1,0 +1,184 @@
+# m1-p3.yml — M1 最窄切片闭环：CI 里起一台 Android → 把我们的 native 服务推进去 → 观测到它
+#
+#   主路 emulator-aosp   : 官方 prebuilt AOSP 镜像（SDK manager 的 aosp_atd，无 GMS）+ emulator + KVM
+#                          → boot → adb root → push dsh_hello_service → ps / service list / dumpsys 观测
+#   副路 cuttlefish-attempt: 按官方文档路线尝试 Cuttlefish（有界、只记录原始输出，不阻塞主路）
+#
+# 边界：不推预构镜像进仓（只在 CI 里下载/使用）；不改 AOSP 源码；本 workflow 只做只读探测 + 我们自己的模块。
+name: m1-p3-boot-and-serve
+
+on:
+  # 只留手动触发：本 workflow 会起模拟器（重），不跟随 push 自动跑
+  # 触发方式：POST /repos/<owner>/<repo>/actions/workflows/m1-p3.yml/dispatches  {"ref":"main"}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ───────────────────────── 主路：起 Android 并把服务跑起来 ─────────────────────────
+  emulator-aosp:
+    name: P3 起 Android（官方 AOSP prebuilt / emulator / KVM）
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      SDK: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境 + KVM（含 ioctl 复核）
+        run: |
+          set -x
+          nproc; free -h | head -2; df -h / | tail -1
+          sudo chmod 666 /dev/kvm && ls -l /dev/kvm
+          python3 -c 'import fcntl,os;fd=os.open("/dev/kvm",os.O_RDWR);print("KVM_GET_API_VERSION =",fcntl.ioctl(fd,0xAE00,0));os.close(fd)'
+          ls "$SDK" || true
+
+      - name: 安装官方 AOSP 系统镜像（候选依次尝试，谁先成功用谁）
+        id: img
+        run: |
+          set -x
+          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$SDK/emulator:$PATH"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --version || true
+          IMG=""
+          for c in "system-images;android-34;aosp_atd;x86_64" \
+                   "system-images;android-33;aosp_atd;x86_64" \
+                   "system-images;android-31;aosp_atd;x86_64" \
+                   "system-images;android-34;google_atd;x86_64"; do
+            echo "== try $c"
+            if sdkmanager "$c" > /tmp/sdk_install.log 2>&1; then echo "INSTALLED_OK $c"; IMG="$c"; break; fi
+            echo "INSTALL_FAILED $c"; tail -6 /tmp/sdk_install.log || true
+          done
+          echo "IMG=$IMG"
+          test -n "$IMG" || { echo "NO_IMAGE_INSTALLED"; exit 1; }
+          echo "img=$IMG" >> "$GITHUB_OUTPUT"
+
+      - name: 建 AVD 并启动模拟器（headless / swiftshader / KVM）
+        run: |
+          set -x
+          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$SDK/emulator:$PATH"
+          (echo no | avdmanager create avd --force -n m1 -k "${{ steps.img.outputs.img }}" --device pixel_5) \
+            || (echo no | avdmanager create avd --force -n m1 -k "${{ steps.img.outputs.img }}")
+          nohup emulator -avd m1 -no-window -no-audio -no-boot-anim -no-snapshot \
+                 -gpu swiftshader_indirect -memory 3072 -cores 2 -verbose > /tmp/emulator.log 2>&1 &
+          sleep 20
+          tail -40 /tmp/emulator.log || true
+
+      - name: 等 Android 启动完成（上限 ~14 分钟）
+        run: |
+          set -x
+          adb start-server || true
+          timeout 120 adb wait-for-device || true
+          for i in $(seq 1 84); do
+            b=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "[$i] sys.boot_completed='$b'"
+            [ "$b" = "1" ] && break
+            sleep 10
+          done
+
+      - name: 观测（adb devices / fingerprint / ps / service list）
+        if: always()
+        run: |
+          set -x
+          adb devices -l || true
+          echo "fingerprint = $(adb shell getprop ro.build.fingerprint 2>/dev/null || true)"
+          echo "build.type  = $(adb shell getprop ro.build.type 2>/dev/null || true)"
+          echo "abi         = $(adb shell getprop ro.product.cpu.abi 2>/dev/null || true)"
+          adb shell getprop ro.build.version.release || true
+          adb shell 'ps -A | wc -l' || true
+          adb shell 'service list | wc -l' || true
+          df -h /
+
+      - name: 用 NDK 编我们的服务（libbinder_ndk 变体；不需要 AOSP 树）
+        run: |
+          set -eux
+          NDK="$SDK/ndk/$(ls "$SDK/ndk" | sort -V | tail -1)"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "NDK=$NDK"
+          for api in 30 29 34; do
+            if "$TC/x86_64-linux-android${api}-clang++" -O2 -std=c++17 -DDSH_WITH_BINDER_NDK=1 \
+                 m1/service/dsh_hello_service.cpp -lbinder_ndk -o dsh_hello_service.x86_64; then
+              echo "NDK_BUILD_OK api=$api"; break
+            fi
+          done
+          file dsh_hello_service.x86_64
+          sha256sum dsh_hello_service.x86_64 | tee dsh.sha256
+
+      - name: P4 推进模拟器并观测（ps / service list / dumpsys）
+        run: |
+          set -x
+          adb root || true; sleep 4; adb wait-for-device || true
+          adb shell setenforce 0 || true
+          adb push dsh_hello_service.x86_64 /data/local/tmp/ || true
+          adb shell chmod 755 /data/local/tmp/dsh_hello_service.x86_64 || true
+          adb shell "setsid /data/local/tmp/dsh_hello_service.x86_64 > /data/local/tmp/dsh.log 2>&1 < /dev/null &" || true
+          sleep 6
+          echo "=== /data/local/tmp/dsh.log ==="; adb shell cat /data/local/tmp/dsh.log || true
+          echo "=== ps -A | grep -i dsh ==="; adb shell 'ps -A | grep -i dsh' || true
+          echo "=== service check dsh_hello_service ==="; adb shell 'service check dsh_hello_service' || true
+          echo "=== service list | grep -i dsh ==="; adb shell 'service list | grep -i dsh' || true
+          echo "=== dumpsys dsh_hello_service（前 20 行） ==="; adb shell 'dumpsys dsh_hello_service 2>&1 | head -20' || true
+          echo "=== service list 全量计数 ==="; adb shell 'service list | wc -l' || true
+
+      - name: 收集日志（always）
+        if: always()
+        run: |
+          mkdir -p logs
+          cp /tmp/emulator.log logs/ 2>/dev/null || true
+          cp /tmp/sdk_install.log logs/ 2>/dev/null || true
+          adb devices -l > logs/adb_devices.txt 2>&1 || true
+          adb shell getprop > logs/getprop.txt 2>&1 || true
+          adb shell 'ps -A' > logs/ps-A.txt 2>&1 || true
+          adb shell 'service list' > logs/service_list.txt 2>&1 || true
+          adb shell 'service check dsh_hello_service' > logs/service_check.txt 2>&1 || true
+          adb shell cat /data/local/tmp/dsh.log > logs/dsh.log 2>&1 || true
+          { df -h /; free -h; nproc; } > logs/resources.txt 2>&1 || true
+          ls -l logs || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m1-p3-logs
+          path: logs/
+          if-no-files-found: warn
+
+  # ───────────────────── 副路：Cuttlefish 官方文档路线尝试（有界，只记原始输出） ─────────────────────
+  cuttlefish-attempt:
+    name: P3b Cuttlefish 尝试（有界；原始输出）
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: 公共构建入口探测（逐条原始状态码）
+        run: |
+          set -x
+          for u in \
+            "https://ci.android.com/" \
+            "https://ci.android.com/builds/branches/aosp-main/grid" \
+            "https://ci.android.com/builds/latest/branches/aosp-main/targets/aosp_cf_x86_64_phone-userdebug/view" \
+            "https://ci.android.com/builds/submitted/" \
+            "https://android-build.googleplex.com/builds/branches/aosp-main/grid" \
+            "https://us-apt.cuttlefish.google.com/" \
+            "https://storage.googleapis.com/" ; do
+            code=$(curl -sS -m 25 -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' -L "$u" 2>/dev/null || echo ERR)
+            echo "PROBE http=$code url=$u"
+          done
+
+      - name: 是否已有 cvd / launch_cvd（apt 路线的前置）
+        run: |
+          set -x
+          (which cvd && cvd --help 2>&1 | head -15) || echo "NO_CVD_BINARY"
+          (which launch_cvd && launch_cvd --help 2>&1 | head -15) || echo "NO_LAUNCH_CVD_BINARY"
+          (apt-cache search cuttlefish 2>&1 | head -10) || true
+
+      - name: 官方 apt 源可达性（按文档路线；失败即记录原始错误）
+        continue-on-error: true
+        run: |
+          set -x
+          curl -v -m 30 -o /tmp/cf.gpg https://us-apt.cuttlefish.google.com/artifactory/apt-cuttlefish-public/cuttlefish-public.gpg 2>&1 | tail -20 || true
+          ls -l /tmp/cf.gpg 2>/dev/null || echo "NO_GPG_FILE"
+
+      - name: 结论
+        run: echo "见上方原始输出；本 job 失败不影响主路"
