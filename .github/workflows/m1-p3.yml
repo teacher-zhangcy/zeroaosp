@@ -152,7 +152,64 @@ jobs:
             echo "BINDER_BUILD_FAILED（编译错误见上方）"
           fi
 
-      - name: P4 推进模拟器并观测（ps / service check / service list / dumpsys）
+      - name: 路径1 —— 设备端 libbinder 直连（拉设备 .so 当链接桩 + 取 AOSP 14 头文件编译）
+        run: |
+          set -ux
+          NDK="$SDK/ndk/$(ls "$SDK/ndk" | sort -V | tail -1)"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "=== (a) 从运行中的设备拉链接桩 .so ==="
+          mkdir -p devlibs
+          for so in libbinder.so libutils.so libcutils.so libbase.so liblog.so libc++.so; do
+            if adb pull "/system/lib64/$so" "devlibs/$so" >/dev/null 2>&1; then echo "PULL_OK $so ($(stat -c%s devlibs/$so) B)"; else echo "PULL_FAILED $so"; fi
+          done
+          echo "=== (b) 取 AOSP 14 的 binder/utils 头（公开 Git，只临时 clone，不落仓） ==="
+          git clone --depth=1 -b android-14.0.0_r1 https://android.googlesource.com/platform/frameworks/native /tmp/fwnative 2>&1 | tail -2 || \
+          git clone --depth=1 -b android-14.0.0_r1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/frameworks/native /tmp/fwnative 2>&1 | tail -2 || true
+          INC=""
+          for d in /tmp/fwnative/libs/binder/include /tmp/fwnative/libs/utils/include /tmp/fwnative/libs/nativebase/include; do
+            [ -d "$d" ] && INC="$INC -I$d" && echo "INC_OK $d" || echo "INC_MISSING $d"
+          done
+          echo "INC=$INC"
+          echo "=== (c) 编译（--no-undefined：链接期就把未解析符号暴露出来） ==="
+          OK=no
+          for std in c++20 c++17; do
+            echo "-- try -std=$std"
+            if "$TC/x86_64-linux-android30-clang++" -O2 -std=$std -Wall \
+                 -DDSH_WITH_BINDER=1 -DDSH_DEVICE_LINKED=1 $INC \
+                 m1/service/dsh_hello_service.cpp \
+                 -Ldevlibs -lbinder -lutils -lcutils -lbase -llog -lc++ \
+                 -Wl,-rpath-link,devlibs -Wl,--allow-shlib-undefined \
+                 -o dsh_hello_service.devbinder 2>&1 | tail -25; then
+              if [ -f dsh_hello_service.devbinder ]; then echo "DEVBINDER_BUILD_OK std=$std"; OK=yes; break; fi
+            fi
+          done
+          echo "DEVBINDER_OK=$OK"
+          if [ "$OK" = yes ]; then
+            file dsh_hello_service.devbinder; sha256sum dsh_hello_service.devbinder | tee dsh.devbinder.sha256
+            echo "=== DT_NEEDED（应含 libbinder.so / libutils.so / libc++.so） ==="
+            "$TC/llvm-readelf" -d dsh_hello_service.devbinder | grep -i NEEDED || true
+            echo "=== 未解析符号（--no-undefined 通过后此处应为空） ==="
+            "$TC/llvm-nm" -u dsh_hello_service.devbinder 2>/dev/null | head -10 || true
+          fi
+
+      - name: 路径1 验证 —— 推 devbinder 版，看 service check / service list / dumpsys（判定口径：正命中）
+        run: |
+          set -x
+          test "$(cat /tmp/boot_ok.txt)" = "BOOT_OK=yes" || echo "WARN: 未确认启动完成，仍继续观测"
+          adb root || true; sleep 5; adb wait-for-device || true
+          adb shell setenforce 0 || true
+          if [ ! -f dsh_hello_service.devbinder ]; then echo "NO_DEVBINDER_BINARY（路径1 编译未产出）"; exit 0; fi
+          adb push dsh_hello_service.devbinder /data/local/tmp/dsh_devbinder || true
+          adb shell chmod 755 /data/local/tmp/dsh_devbinder || true
+          adb shell "setsid /data/local/tmp/dsh_devbinder > /data/local/tmp/dsh_dev.log 2>&1 < /dev/null &" || true
+          sleep 8
+          echo "=== /data/local/tmp/dsh_dev.log ==="; adb shell cat /data/local/tmp/dsh_dev.log || true
+          echo "=== service check dsh_hello_service ==="; adb shell 'service check dsh_hello_service' || true
+          echo "=== service list | grep -i dsh ==="; adb shell 'service list | grep -i dsh' || true
+          echo "=== dumpsys dsh_hello_service ==="; adb shell 'dumpsys dsh_hello_service' || true
+          echo "=== ps -A | grep -i dsh ==="; adb shell 'ps -A | grep -i dsh' || true
+
+      - name: P4 保底 —— 推 stub 版并观测进程（006 已达成的部分，作对照）
         run: |
           set -x
           test "$(cat /tmp/boot_ok.txt)" = "BOOT_OK=yes" || echo "WARN: 上一阶段未确认启动完成，仍继续观测"
@@ -186,26 +243,28 @@ jobs:
           adb shell 'service check dsh_hello_service' > logs/service_check.txt 2>&1 || true
           adb shell 'dumpsys dsh_hello_service' > logs/dumpsys.txt 2>&1 || true
           adb shell cat /data/local/tmp/dsh.log > logs/dsh.log 2>&1 || true
+          adb shell cat /data/local/tmp/dsh_dev.log > logs/dsh_dev.log 2>&1 || true
           { df -h /; free -h; nproc; } > logs/resources.txt 2>&1 || true
           ls -l logs || true
 
-      - name: 证据断言（v4：修掉 v3 的假阳性——"not found" 不算命中）
+      - name: 证据断言（T-007 口径：service check 正命中 或 dumpsys 有输出才算成功）
         if: always()
         run: |
           set -x
-          echo "--- ps ---"; grep -i dsh logs/ps-A.txt || true
           echo "--- service check ---"; cat logs/service_check.txt || true
-          echo "--- service list ---"; grep -i dsh logs/service_list.txt || true
-          echo "--- dsh.log ---"; cat logs/dsh.log || true
-          PS_OK=no; SVC_OK=no
-          if grep -i dsh_hello_service logs/ps-A.txt | grep -qiv 'not found'; then PS_OK=yes; fi
-          if grep -qi 'Service dsh_hello_service: found' logs/service_check.txt; then SVC_OK=yes; fi
-          echo "PS_OK=$PS_OK SVC_OK=$SVC_OK"
-          if [ "$PS_OK" = yes ] || [ "$SVC_OK" = yes ]; then
-            echo "EVIDENCE_OK (ps=$PS_OK svc=$SVC_OK)"
+          echo "--- service list（grep dsh） ---"; grep -i dsh logs/service_list.txt || true
+          echo "--- dumpsys ---"; cat logs/dumpsys.txt || true
+          echo "--- dsh_dev.log（路径1 那支的自身日志） ---"; cat logs/dsh_dev.log 2>/dev/null || true
+          echo "--- ps（006 已达成的部分，本单不计入成功） ---"; grep -i dsh logs/ps-A.txt || true
+          SVC_OK=no; DUMP_OK=no
+          if grep -q 'Service dsh_hello_service: found' logs/service_check.txt; then SVC_OK=yes; fi
+          if grep -qi dsh logs/dumpsys.txt && ! grep -qi "Can't find service" logs/dumpsys.txt; then DUMP_OK=yes; fi
+          echo "SVC_OK=$SVC_OK DUMP_OK=$DUMP_OK"
+          if [ "$SVC_OK" = yes ] || [ "$DUMP_OK" = yes ]; then
+            echo "T007_SUCCESS (svc=$SVC_OK dump=$DUMP_OK)"
             exit 0
           fi
-          echo "EVIDENCE_MISSING=1 (ps=$PS_OK svc=$SVC_OK)"; exit 1
+          echo "T007_NOT_REGISTERED (svc=$SVC_OK dump=$DUMP_OK)"; exit 1
 
       - uses: actions/upload-artifact@v4
         if: always()

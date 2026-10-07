@@ -40,7 +40,11 @@ static const char* kBuildKind =
 #elif defined(DSH_WITH_BINDER_NDK)
     "android-ndk-libbinder_ndk";
 #elif defined(DSH_WITH_BINDER)
+#  if defined(DSH_DEVICE_LINKED)
+    "android-devicelibs-binder";   // 路径1：链到从设备拉下来的真 libbinder.so
+#  else
     "android-soong-binder";
+#  endif
 #else
     "android-ndk-stub";
 #endif
