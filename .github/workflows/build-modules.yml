@@ -1,0 +1,148 @@
+# zeroaosp · 云端模块构建（workflow 草案 v0.1）
+#
+# 状态：草案 v0.1（已在 GitHub Actions 上真实跑过，run 记录见仓库 Actions 页）。
+#
+#
+# 设计约束
+#   1. 只编「独立模块」：单个 APK / 单个 APEX / QuickJS 库。
+#      整机 system.img 永不上 Actions —— 与免费额度无关，是 14 GB 磁盘装不下全量树。
+#   2. runner 免费档规格由 runner-spec job 实测（核数 / 内存 / 磁盘），本文件不写死，
+#      避免把没实测过的数字写进流水线假设。
+#   3. 不使用任何 secrets：公开仓的构建必须第三人可复现；需要凭据的步骤一律不做。
+#   4. 探测（runner-spec / manifest-lint）与构建（build-module）分离：
+#      探测每次 push 都跑；构建只在手动触发且给出模块名时跑（最小化原则）。
+
+name: build-modules
+
+on:
+  workflow_dispatch:
+    inputs:
+      module_target:
+        description: 'Soong 模块名（如 framework-minus-apex）；留空则只跑 runner 探测与清单校验'
+        required: false
+        default: ''
+        type: string
+  push:
+    paths:
+      - 'manifest/**'
+      - 'patches/**'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-modules-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ── 1. 探测：把 runner 的真实规格打成日志（runner 规格的观测来源） ──────────────
+  runner-spec:
+    name: runner 规格探测
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: 采集 runner 事实
+        run: |
+          set -x
+          uname -a
+          cat /etc/os-release
+          echo "--- cpu ---"; nproc; grep -m1 'model name' /proc/cpuinfo || true
+          echo "--- mem ---"; free -h
+          echo "--- disk ---"; df -h /; df -h /mnt 2>/dev/null || true
+          echo "--- toolchain ---"; git --version; python3 --version || true
+      - name: 磁盘门槛（不足即失败，失败本身是证据）
+        run: |
+          set -eu
+          avail_gb=$(df -BG --output=avail / | tail -n1 | tr -dc '0-9')
+          echo "root_avail_gb=${avail_gb}"
+          if [ "${avail_gb}" -lt 10 ]; then
+            echo "::error::根分区可用 ${avail_gb} GB < 10 GB 门槛，直接终止"
+            exit 1
+          fi
+
+  # ── 2. 校验：清单只有 11 个 project、revision 钉死、台账结构正确 ─────────
+  manifest-lint:
+    name: 清单与补丁台账校验
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: manifest XML 可解析（python 标准库，无额外依赖）
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import glob, xml.dom.minidom as md
+          files = sorted(glob.glob("manifest/*.xml"))
+          assert files, "manifest/ 下没有 XML"
+          for f in files:
+              md.parse(f)
+              print("XML OK:", f)
+          PY
+
+      - name: 只声明 11 个目标 project，且 revision 已钉死
+        run: |
+          set -eu
+          f=manifest/zeroaosp-14.xml
+          n=$(grep -c '<project ' "$f")
+          echo "project_count=${n}"
+          [ "${n}" -eq 11 ] || { echo "::error::project 数应为 11，实际 ${n}"; exit 1; }
+          grep -q 'revision="refs/tags/android-14.0.0_r1"' "$f" \
+            || { echo "::error::revision 未钉死到 android-14.0.0_r1"; exit 1; }
+          grep -q 'system.img' "$f" && { echo "::error::清单不该出现 system.img"; exit 1; } || true
+          echo "manifest 校验通过"
+
+      - name: 打印清单里的 11 条 project（留痕证据）
+        run: |
+          set -eu
+          grep -n '<project ' manifest/zeroaosp-14.xml
+
+      - name: patches/INDEX.tsv 结构（列为 9、列名固定）
+        run: |
+          set -eu
+          if [ -f patches/INDEX.tsv ]; then
+            head -n1 patches/INDEX.tsv
+            awk -F'\t' 'NR==1{next} NF!=9{print "列数异常: 行" NR " 有 " NF " 列"; bad=1} END{printf "data_rows_checked\n"; exit bad+0}' patches/INDEX.tsv
+          else
+            echo "patches/INDEX.tsv 尚不存在（允许），跳过"
+          fi
+
+  # ── 3. 构建：骨架，默认不跑；跑之前先过磁盘门槛与范围检查 ──────────────
+  build-module:
+    name: 模块构建（骨架，默认不跑）
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.module_target != '' }}
+    needs: [runner-spec, manifest-lint]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      MODULE_TARGET: ${{ inputs.module_target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 只允许独立模块（明确拒绝整机构建）
+        run: |
+          set -eu
+          case "${MODULE_TARGET}" in
+            droid|otapackage|full|system.img|*system.img*)
+              echo "::error::整机构建（${MODULE_TARGET}）不在本流水线范围内"; exit 1 ;;
+          esac
+          echo "OK：目标为独立模块 ${MODULE_TARGET}"
+
+      - name: 预算与环境检查
+        run: |
+          set -x
+          df -h /
+          df -h /mnt 2>/dev/null || true
+          echo "module_target=${MODULE_TARGET}"
+
+      - name: 拉子集源码并构建（后续替换为真实执行）
+        run: |
+          set -eu
+          # 后续版本计划执行的命令（当前只回显，不做真实构建）：
+          #   repo init -u https://github.com/<owner>/zeroaosp -b main -m manifest/zeroaosp-14.xml
+          #   repo sync -c -j4 --no-tags --fail-fast
+          #   source build/envsetup.sh && lunch aosp_arm64-trunk_staging-userdebug
+          #   m "${MODULE_TARGET}"
+          echo "TODO：本 job 目前只做计划回显，不做真实构建"

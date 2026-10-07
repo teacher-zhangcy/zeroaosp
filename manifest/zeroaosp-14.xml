@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  zeroaosp manifest alias — AOSP 14 子集清单（草案 v0.1）
+
+  状态    ：草案 v0.1（2026-10-07）
+  基线    ：refs/tags/android-14.0.0_r1（全项目钉死，不中途换分支）
+  来源    ：上游 AOSP 清单 platform/manifest 的 11 个目标 project 子集
+            （1224 个 <project> 中的 11 个；该文件所在的 platform/manifest 仓
+             HEAD = e3f9241982f55ef4cec97df0c55e9b87d37a5656
+             "Manifest for Android 14.0.0 Release 1 (UP1A.231005.007)"）
+  用法    ：repo init -u https://github.com/<owner>/zeroaosp -b main -m manifest/zeroaosp-14.xml
+
+  两条与上游不同的地方（有意为之）：
+  1. <remote fetch> 用**绝对 URL**。上游 default.xml 写 fetch=".."，那是相对 manifest 仓自身解析；
+     本清单不在清华镜像上（在 GitHub），fetch=".." 会解析到 GitHub 而拉不到任何 AOSP 仓。
+  2. 只保留 11 个目标 project。上游 1224 个 project 里其余部分本项目不研究、不构建。
+  其余属性（path / name / groups / linkfile）与上游对应行**逐字相同**，便于第三人 diff 验证。
+
+  已勘误：不要启用 repo 的 use-superproject 选项（superproject 需要完整上游，与子集清单冲突），
+          故上游那行 <superproject> 有意省略。另注意 XML 注释里不能出现连续两个 ASCII 连字符，
+          所以本文里的命令行选项一律改用文字描述。
+-->
+<manifest>
+
+  <remote  name="tuna"
+           fetch="https://mirrors.tuna.tsinghua.edu.cn/git/AOSP"
+           review="https://android-review.googlesource.com/" />
+  <default revision="refs/tags/android-14.0.0_r1"
+           remote="tuna"
+           sync-j="4" />
+  <contactinfo bugurl="go/repo-bug" />
+
+  <!-- ↓↓↓ 以下 11 条 = reference/aosp-14/_manifest/default.xml 的对应行（行号见每条上方注释） ↓↓↓ -->
+
+  <!-- default.xml:1163 | 参考树目录：projects/apex -->
+  <project path="system/apex" name="platform/system/apex" groups="pdk" />
+
+  <!-- default.xml:835 | 参考树目录：projects/base -->
+  <project path="frameworks/base" name="platform/frameworks/base" groups="pdk-cw-fs,pdk-fs" />
+
+  <!-- default.xml:14-21 | 参考树目录：projects/build -->
+  <project path="build/make" name="platform/build" groups="pdk" >
+    <linkfile src="CleanSpec.mk" dest="build/CleanSpec.mk" />
+    <linkfile src="buildspec.mk.default" dest="build/buildspec.mk.default" />
+    <linkfile src="core" dest="build/core" />
+    <linkfile src="envsetup.sh" dest="build/envsetup.sh" />
+    <linkfile src="target" dest="build/target" />
+    <linkfile src="tools" dest="build/tools" />
+  </project>
+
+  <!-- default.xml:1169 | 参考树目录：projects/core -->
+  <project path="system/core" name="platform/system/core" groups="pdk" />
+
+  <!-- default.xml:43 | 参考树目录：projects/development -->
+  <project path="development" name="platform/development" groups="developers,pdk-cw-fs,pdk-fs" />
+
+  <!-- default.xml:1000 | 参考树目录：projects/Launcher3 -->
+  <project path="packages/apps/Launcher3" name="platform/packages/apps/Launcher3" groups="pdk-fs" />
+
+  <!-- default.xml:851 | 参考树目录：projects/native -->
+  <project path="frameworks/native" name="platform/frameworks/native" groups="pdk" />
+
+  <!-- default.xml:1098 | 参考树目录：projects/platform_testing -->
+  <project path="platform_testing" name="platform/platform_testing" groups="pdk-fs,pdk-cw-fs,cts" />
+
+  <!-- default.xml:1205 | 参考树目录：projects/sepolicy -->
+  <project path="system/sepolicy" name="platform/system/sepolicy" groups="pdk" />
+
+  <!-- default.xml:30-33 | 参考树目录：projects/soong -->
+  <project path="build/soong" name="platform/build/soong" groups="pdk,tradefed" >
+    <linkfile src="root.bp" dest="Android.bp" />
+    <linkfile src="bootstrap.bash" dest="bootstrap.bash" />
+  </project>
+
+  <!-- default.xml:843 | 参考树目录：projects/systemui -->
+  <project path="frameworks/libs/systemui" name="platform/frameworks/libs/systemui" groups="pdk-cw-fs,pdk-fs" />
+
+</manifest>
