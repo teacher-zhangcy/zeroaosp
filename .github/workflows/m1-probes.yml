@@ -49,13 +49,34 @@ jobs:
           kvm-ok || echo "kvm-ok: not OK"
           echo "=== 资源 ==="; nproc; free -h | head -2; df -h / | tail -1
 
+      - name: P1b 放开 /dev/kvm 权限 + 真实 ioctl 探测（决定性）
+        run: |
+          set -x
+          echo "=== 放开 /dev/kvm 权限（CI 惯例：设备本身存在，只是不在 kvm 组；不是安装/伪造 KVM） ==="
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
+          if [ -r /dev/kvm ]; then echo "READABLE_AFTER_FIX=yes"; else echo "READABLE_AFTER_FIX=no"; fi
+          if [ -w /dev/kvm ]; then echo "WRITABLE_AFTER_FIX=yes"; else echo "WRITABLE_AFTER_FIX=no"; fi
+          python3 --version
+          echo "=== KVM_GET_API_VERSION（0xAE00）：12 = 现代 KVM ==="
+          python3 -c 'import fcntl,os;fd=os.open("/dev/kvm",os.O_RDWR);print("KVM_GET_API_VERSION =",fcntl.ioctl(fd,0xAE00,0));os.close(fd)'
+          echo "=== KVM_CREATE_VM（0xAE01）：能否真的建虚拟机 ==="
+          python3 -c 'import fcntl,os;fd=os.open("/dev/kvm",os.O_RDWR);vm=fcntl.ioctl(fd,0xAE01,0);print("KVM_CREATE_VM ok, vm_fd =",vm);os.close(vm);os.close(fd)'
+
       - name: 判定
         run: |
           set -eu
-          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-            echo "VERDICT=KVM_AVAILABLE  → 本仓 runner 具备跑 Cuttlefish 的虚拟化条件"
+          if [ ! -e /dev/kvm ]; then
+            echo "VERDICT=KVM_ABSENT → 无 /dev/kvm，Cuttlefish 不能在 CI 启动（如实报告，不绕过）"
+            exit 0
+          fi
+          sudo chmod 666 /dev/kvm
+          VER=$(python3 -c 'import fcntl,os;fd=os.open("/dev/kvm",os.O_RDWR);print(fcntl.ioctl(fd,0xAE00,0));os.close(fd)' 2>/dev/null || echo FAIL)
+          echo "KVM_GET_API_VERSION=${VER}"
+          if [ "${VER}" = "12" ]; then
+            echo "VERDICT=KVM_USABLE → 本仓 runner 具备跑 Cuttlefish 的虚拟化条件（需按 CI 惯例先放开 /dev/kvm 权限）"
           else
-            echo "VERDICT=KVM_UNAVAILABLE → 本仓 runner 无法直接跑 Cuttlefish（如实报告，不绕过）"
+            echo "VERDICT=KVM_NOT_USABLE → KVM 不可用（如实报告，不绕过）"
           fi
 
   # ── P2：最小自研 native 服务冒烟 ─────────────────────────────────────────
@@ -112,8 +133,9 @@ jobs:
           git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/build/soong /tmp/soong
           git clone --depth=1 https://android.googlesource.com/platform/build/blueprint /tmp/blueprint || \
           git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/build/blueprint /tmp/blueprint
-          mkdir -p /tmp/gopath/src/android
-          ln -sfn /tmp/soong /tmp/gopath/src/android/soong
+          mkdir -p /tmp/gopath/src/android /tmp/gopath/src/github.com/google
+          ln -sfn /tmp/soong     /tmp/gopath/src/android/soong
+          ln -sfn /tmp/blueprint /tmp/gopath/src/github.com/google/blueprint
           export GOPATH=/tmp/gopath GO111MODULE=off GOFLAGS=
           cd /tmp/gopath/src/android/soong
           go build -o /tmp/bpfix ./bpfix/cmd && echo "BPFIX_BUILT OK"
