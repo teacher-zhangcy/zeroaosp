@@ -26,7 +26,9 @@ on:
     paths:
       - 'manifest/**'
       - 'patches/**'
-      - '.github/workflows/**'
+      # 收窄（T-eng-infra-008）：原来这里是 '.github/workflows/**'，导致改任何 workflow（含 verify-emulator）
+      # 都会顺带跑一遍 build-modules，纯噪音。现在只在本文件自身变化时触发，原有行为不变。
+      - '.github/workflows/build-modules.yml'
 
 permissions:
   contents: read

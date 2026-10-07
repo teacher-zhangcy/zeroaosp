@@ -1,0 +1,58 @@
+# verify-emulator.yml — M1 常驻验证闸门（**薄壳**：真正的流程在 ci/verify-emulator.sh）
+#
+# 为什么是薄壳：把 125 秒的实测流程写成仓内的脚本，才能在本地复跑、被 review、被单测；
+#   workflow 只负责触发、传参、上传产物。
+#
+# 触发方式
+#   - workflow_dispatch：手动跑。可传 expect_process（负向对照用）与 with_binder（多验一步注册）
+#   - push：只在相关路径变动时跑 —— 改文档/清单不会白花这 2 分钟
+#
+# 产物：artifacts/ 下的启动日志、getprop、ps、服务自报日志等，保留 14 天
+name: verify-emulator
+
+on:
+  workflow_dispatch:
+    inputs:
+      expect_process:
+        description: '断言要求 ps 里出现的进程名；填一个不存在的名字即可做"闸门真会红"的负向对照'
+        required: false
+        default: 'dsh_hello_service'
+        type: string
+      with_binder:
+        description: '1 = 额外断言"服务被 servicemanager 登记"（T-007 路径1，约多 1 分钟）'
+        required: false
+        default: '0'
+        type: string
+  push:
+    paths:
+      - 'ci/**'
+      - 'm1/**'
+      - '.github/workflows/verify-emulator.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: emulator 冒烟闸门
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      SDK: /usr/local/lib/android/sdk
+      ARTIFACT_DIR: artifacts
+      EXPECT_PROCESS: ${{ inputs.expect_process || 'dsh_hello_service' }}
+      WITH_BINDER: ${{ inputs.with_binder || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 跑闸门脚本（ci/verify-emulator.sh）
+        run: bash ci/verify-emulator.sh
+
+      - name: 上传产物（always，保留 14 天）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-emulator-artifacts
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: warn
