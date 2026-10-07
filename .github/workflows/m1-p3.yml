@@ -29,17 +29,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: PATH 一次性配置 + 工具自检（v2 修复）
+      - name: 工具路径解析（只硬性要求 sdkmanager/adb；v3 修复）
         run: |
-          set -eux
+          set -ux          # 故意不用 -e：可选工具缺失不应该中断，只应被记录
           echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$SDK/platform-tools"          >> "$GITHUB_PATH"
-          echo "$SDK/emulator"                >> "$GITHUB_PATH"
-          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$SDK/emulator:$PATH"
-          command -v sdkmanager; sdkmanager --version
-          command -v adb; adb version
-          command -v emulator; emulator -version 2>&1 | head -3 || true
+          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$PATH"
+          echo "--- SDK 根目录 ---"; ls -l "$SDK" || true
+          echo "--- 工具存在性 ---"
+          for t in sdkmanager avdmanager adb emulator; do
+            printf '%s -> %s\n' "$t" "$(command -v "$t" || echo MISSING)"
+          done
+          sdkmanager --version || true
+          adb version 2>&1 | head -2 || true
           nproc; free -h | head -2; df -h / | tail -1
+          command -v sdkmanager >/dev/null || { echo "NO_SDKMANAGER"; exit 1; }
+          command -v adb >/dev/null || { echo "NO_ADB"; exit 1; }
 
       - name: KVM 放开权限 + ioctl 复核
         run: |
@@ -48,12 +53,19 @@ jobs:
           ls -l /dev/kvm
           python3 -c 'import fcntl,os;fd=os.open("/dev/kvm",os.O_RDWR);print("KVM_GET_API_VERSION =",fcntl.ioctl(fd,0xAE00,0));os.close(fd)'
 
-      - name: 安装官方 AOSP 系统镜像（候选依次尝试）
+      - name: 安装 SDK 包（emulator + platform-tools + 官方 AOSP 系统镜像）
         id: img
         run: |
           set -eux
-          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$SDK/emulator:$PATH"
+          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$PATH"
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          echo "== 装 emulator / platform-tools（本 runner 镜像可能不带 emulator 包）"
+          sdkmanager "platform-tools" "emulator" > /tmp/sdk_emu.log 2>&1 || tail -20 /tmp/sdk_emu.log || true
+          EMU_BIN=$(command -v emulator || find "$SDK" -maxdepth 3 -type f -name emulator | head -1 || true)
+          test -n "$EMU_BIN" || { echo "NO_EMULATOR_BINARY"; tail -30 /tmp/sdk_emu.log || true; exit 1; }
+          echo "EMU_BIN=$EMU_BIN"
+          echo "EMU_BIN=$EMU_BIN" >> "$GITHUB_ENV"
+          echo "$(dirname "$EMU_BIN")" >> "$GITHUB_PATH"
           IMG=""
           for c in "system-images;android-34;aosp_atd;x86_64" \
                    "system-images;android-33;aosp_atd;x86_64" \
@@ -70,15 +82,18 @@ jobs:
       - name: 建 AVD 并启动模拟器（headless / swiftshader / KVM）
         run: |
           set -eux
-          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$SDK/emulator:$PATH"
+          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$PATH"
+          echo "EMU_BIN=$EMU_BIN"; test -x "$EMU_BIN"
           (echo no | avdmanager create avd --force -n m1 -k "${{ steps.img.outputs.img }}" --device pixel_5) \
             || (echo no | avdmanager create avd --force -n m1 -k "${{ steps.img.outputs.img }}")
-          nohup emulator -avd m1 -no-window -no-audio -no-boot-anim -no-snapshot \
+          nohup "$EMU_BIN" -avd m1 -no-window -no-audio -no-boot-anim -no-snapshot \
                  -gpu swiftshader_indirect -memory 3072 -cores 2 -verbose > /tmp/emulator.log 2>&1 &
           echo $! > /tmp/emulator.pid
           sleep 30
-          echo "emulator pid=$(cat /tmp/emulator.pid) alive=$(kill -0 $(cat /tmp/emulator.pid) 2>/dev/null && echo yes || echo no)"
+          echo "emulator pid=$(cat /tmp/emulator.pid)"
+          kill -0 "$(cat /tmp/emulator.pid)" 2>/dev/null && echo "emulator alive=yes" || echo "emulator alive=no"
           grep -m3 -E 'CPU Acceleration|KVM' /tmp/emulator.log || true
+          tail -5 /tmp/emulator.log || true
 
       - name: 等 Android 启动完成（有界 10 分钟）
         run: |
