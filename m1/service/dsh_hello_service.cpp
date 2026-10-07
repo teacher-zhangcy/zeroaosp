@@ -15,8 +15,14 @@
 
 #if defined(DSH_WITH_BINDER_NDK)
 #include <android/binder_ibinder.h>
-#include <android/binder_manager.h>
 #include <android/binder_status.h>
+#  if __has_include(<android/binder_manager.h>)
+#    include <android/binder_manager.h>
+#  else
+// 某些 NDK 版本不带 binder_manager.h；AServiceManager_addService 是 libbinder_ndk 的稳定 ABI 符号，
+// 因此这里自行声明（并仍然 -lbinder_ndk 链接）。CI 会同时打印头文件清单与 nm -D 结果作为依据。
+extern "C" binder_status_t AServiceManager_addService(AIBinder* binder, const char* instance);
+#  endif
 #elif defined(DSH_WITH_BINDER)
 #include <binder/Binder.h>
 #include <binder/IPCThreadState.h>

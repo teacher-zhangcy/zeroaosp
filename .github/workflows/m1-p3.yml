@@ -123,20 +123,31 @@ jobs:
           echo "svc_count   = $(adb shell 'service list | wc -l' 2>/dev/null || true)"
           df -h / | tail -1
 
-      - name: 用 NDK 编我们的服务（libbinder_ndk 变体；不需要 AOSP 树）
+      - name: 用 NDK 编我们的服务（stub 保底 + libbinder_ndk 尽力；并报告 NDK 的 binder 头与符号）
         run: |
           set -eux
           NDK="$SDK/ndk/$(ls "$SDK/ndk" | sort -V | tail -1)"
           TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          SYSROOT="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           echo "NDK=$NDK"
-          for api in 30 29 34; do
-            if "$TC/x86_64-linux-android${api}-clang++" -O2 -std=c++17 -DDSH_WITH_BINDER_NDK=1 \
-                 m1/service/dsh_hello_service.cpp -lbinder_ndk -o dsh_hello_service.x86_64; then
-              echo "NDK_BUILD_OK api=$api"; break
-            fi
+          echo "=== (a) NDK 里有哪些 android/binder*.h ==="
+          ls "$SYSROOT/usr/include/android/" 2>/dev/null | grep -i binder || echo "NO_ANDROID_BINDER_HEADERS"
+          echo "=== (b) libbinder_ndk.so 是否导出 AServiceManager_addService ==="
+          for f in $(find "$NDK" -name 'libbinder_ndk.so' 2>/dev/null | head -2); do
+            echo "-- $f"
+            nm -D "$f" 2>/dev/null | grep -E 'AServiceManager_addService|AIBinder_new|AIBinder_Class_define' || echo "   (nm 无匹配)"
           done
-          file dsh_hello_service.x86_64
-          sha256sum dsh_hello_service.x86_64 | tee dsh.sha256
+          echo "=== (c) 保底版：不依赖 binder 头 ==="
+          "$TC/x86_64-linux-android30-clang++" -O2 -std=c++17 -DDSH_BUILD_HOST=0 \
+              m1/service/dsh_hello_service.cpp -o dsh_hello_service.stub
+          file dsh_hello_service.stub; sha256sum dsh_hello_service.stub | tee dsh.stub.sha256
+          echo "=== (d) 尽力版：libbinder_ndk（含自声明回退） ==="
+          if "$TC/x86_64-linux-android30-clang++" -O2 -std=c++17 -DDSH_WITH_BINDER_NDK=1 \
+               m1/service/dsh_hello_service.cpp -lbinder_ndk -o dsh_hello_service.binder; then
+            echo "BINDER_BUILD_OK"; file dsh_hello_service.binder; sha256sum dsh_hello_service.binder | tee dsh.binder.sha256
+          else
+            echo "BINDER_BUILD_FAILED（编译错误见上方）"
+          fi
 
       - name: P4 推进模拟器并观测（ps / service check / service list / dumpsys）
         run: |
@@ -144,12 +155,16 @@ jobs:
           test "$(cat /tmp/boot_ok.txt)" = "BOOT_OK=yes" || echo "WARN: 上一阶段未确认启动完成，仍继续观测"
           adb root || true; sleep 5; adb wait-for-device || true
           adb shell setenforce 0 || true
-          adb push dsh_hello_service.x86_64 /data/local/tmp/ || true
-          adb shell chmod 755 /data/local/tmp/dsh_hello_service.x86_64 || true
-          adb shell "setsid /data/local/tmp/dsh_hello_service.x86_64 > /data/local/tmp/dsh.log 2>&1 < /dev/null &" || true
+          BIN=dsh_hello_service.stub
+          if [ -f dsh_hello_service.binder ]; then BIN=dsh_hello_service.binder; echo "推送：binder 版"; else echo "推送：stub 版（binder 版未编出）"; fi
+          ls -l "$BIN"
+          adb push "$BIN" /data/local/tmp/dsh_hello_service || true
+          adb shell chmod 755 /data/local/tmp/dsh_hello_service || true
+          adb shell "setsid /data/local/tmp/dsh_hello_service > /data/local/tmp/dsh.log 2>&1 < /dev/null &" || true
           sleep 8
           echo "=== /data/local/tmp/dsh.log ==="; adb shell cat /data/local/tmp/dsh.log || true
-          echo "=== ps -A | grep -i dsh ==="; adb shell 'ps -A | grep -i dsh' || true
+          echo "=== ps -A（我们那一行） ==="; adb shell 'ps -A | grep -i dsh' || true
+          echo "=== ps -A -o PID,USER,NAME（前 5 行） ==="; adb shell 'ps -A -o PID,USER,NAME 2>/dev/null | head -5' || true
           echo "=== service check dsh_hello_service ==="; adb shell 'service check dsh_hello_service' || true
           echo "=== service list | grep -i dsh ==="; adb shell 'service list | grep -i dsh' || true
           echo "=== dumpsys dsh_hello_service（前 20 行） ==="; adb shell 'dumpsys dsh_hello_service 2>&1 | head -20' || true
@@ -171,21 +186,23 @@ jobs:
           { df -h /; free -h; nproc; } > logs/resources.txt 2>&1 || true
           ls -l logs || true
 
-      - name: 证据断言（拿不到证据就让 run 失败——v2 修复假性成功）
+      - name: 证据断言（v4：修掉 v3 的假阳性——"not found" 不算命中）
         if: always()
         run: |
           set -x
-          echo "--- ps-A.txt 里的我们 ---"; grep -i dsh_hello_service logs/ps-A.txt || true
-          echo "--- service_check.txt ---"; cat logs/service_check.txt || true
-          echo "--- service_list.txt 里的我们 ---"; grep -i dsh logs/service_list.txt || true
+          echo "--- ps ---"; grep -i dsh logs/ps-A.txt || true
+          echo "--- service check ---"; cat logs/service_check.txt || true
+          echo "--- service list ---"; grep -i dsh logs/service_list.txt || true
           echo "--- dsh.log ---"; cat logs/dsh.log || true
-          if grep -qi dsh_hello_service logs/ps-A.txt; then
-            echo "EVIDENCE_OK=process_running"
-          elif grep -qi 'dsh_hello_service' logs/service_list.txt logs/service_check.txt 2>/dev/null; then
-            echo "EVIDENCE_OK=service_registered"
-          else
-            echo "EVIDENCE_MISSING=1"; exit 1
+          PS_OK=no; SVC_OK=no
+          if grep -i dsh_hello_service logs/ps-A.txt | grep -qiv 'not found'; then PS_OK=yes; fi
+          if grep -qi 'Service dsh_hello_service: found' logs/service_check.txt; then SVC_OK=yes; fi
+          echo "PS_OK=$PS_OK SVC_OK=$SVC_OK"
+          if [ "$PS_OK" = yes ] || [ "$SVC_OK" = yes ]; then
+            echo "EVIDENCE_OK (ps=$PS_OK svc=$SVC_OK)"
+            exit 0
           fi
+          echo "EVIDENCE_MISSING=1 (ps=$PS_OK svc=$SVC_OK)"; exit 1
 
       - uses: actions/upload-artifact@v4
         if: always()
