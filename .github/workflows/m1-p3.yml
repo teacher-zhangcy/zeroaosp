@@ -137,14 +137,17 @@ jobs:
             echo "-- $f"
             nm -D "$f" 2>/dev/null | grep -E 'AServiceManager_addService|AIBinder_new|AIBinder_Class_define' || echo "   (nm 无匹配)"
           done
-          echo "=== (c) 保底版：不依赖 binder 头 ==="
-          "$TC/x86_64-linux-android30-clang++" -O2 -std=c++17 -DDSH_BUILD_HOST=0 \
+          echo "=== (c) 保底版：不依赖 binder 头；静态链接 libc++ 以便在设备上直接跑 ==="
+          "$TC/x86_64-linux-android30-clang++" -O2 -std=c++17 -static-libstdc++ \
               m1/service/dsh_hello_service.cpp -o dsh_hello_service.stub
           file dsh_hello_service.stub; sha256sum dsh_hello_service.stub | tee dsh.stub.sha256
-          echo "=== (d) 尽力版：libbinder_ndk（含自声明回退） ==="
-          if "$TC/x86_64-linux-android30-clang++" -O2 -std=c++17 -DDSH_WITH_BINDER_NDK=1 \
-               m1/service/dsh_hello_service.cpp -lbinder_ndk -o dsh_hello_service.binder; then
+          "$TC/llvm-readelf" -d dsh_hello_service.stub 2>/dev/null | grep -i 'NEEDED' || true
+          echo "=== (d) 尽力版：libbinder_ndk（自声明 + 允许运行期解析 AServiceManager_addService） ==="
+          if "$TC/x86_64-linux-android30-clang++" -O2 -std=c++17 -static-libstdc++ -DDSH_WITH_BINDER_NDK=1 \
+               m1/service/dsh_hello_service.cpp -lbinder_ndk \
+               -Wl,--unresolved-symbols=ignore-all -o dsh_hello_service.binder; then
             echo "BINDER_BUILD_OK"; file dsh_hello_service.binder; sha256sum dsh_hello_service.binder | tee dsh.binder.sha256
+            "$TC/llvm-readelf" -d dsh_hello_service.binder 2>/dev/null | grep -i 'NEEDED' || true
           else
             echo "BINDER_BUILD_FAILED（编译错误见上方）"
           fi
