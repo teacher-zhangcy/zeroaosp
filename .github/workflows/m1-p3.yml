@@ -255,6 +255,14 @@ jobs:
             adb shell "pkill -f dsh_$tag" || true
             sleep 2
           done
+          # 收尾：再起一支 devbinder 并保持存活，供后面的"收集日志"步骤采到"正命中"状态
+          # （上一轮我把 pkill 放在收集之前，导致 service_check.txt 采到的是"服务已消失"——那是我自己的时序 bug）
+          if [ -f dsh_hello_service.devbinder ]; then
+            adb shell "setsid /data/local/tmp/dsh_devbinder > /dev/null 2>&1 < /dev/null &" || true
+            sleep 6
+            echo "=== 收尾（服务保持存活）service check ==="; adb shell 'service check dsh_hello_service' || true
+            echo "=== 收尾 service list | grep -i dsh ==="; adb shell 'service list | grep -i dsh' || true
+          fi
 
       - name: P4 保底 —— 推 stub 版并观测进程（006 已达成的部分，作对照）
         run: |

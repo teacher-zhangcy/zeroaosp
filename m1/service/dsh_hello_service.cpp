@@ -52,8 +52,8 @@ static const char* kBuildKind =
 #if defined(DSH_WITH_BINDER_NDK)
 static void* NdkOnCreate(void* /*args*/) { return nullptr; }
 static void NdkOnDestroy(void* /*userData*/) {}
-static bool NdkOnTransact(AIBinder* /*binder*/, transaction_code_t /*code*/, const AParcel* /*in*/, AParcel* /*out*/) {
-    return false;  // 本冒烟版只验证"注册 + 存活"，业务 transaction 留待插件框架
+static binder_status_t NdkOnTransact(AIBinder* /*binder*/, transaction_code_t /*code*/, const AParcel* /*in*/, AParcel* /*out*/) {
+    return STATUS_UNKNOWN_TRANSACTION;  // 本冒烟版只验证"注册 + 存活"，业务 transaction 留待插件框架
 }
 #elif defined(DSH_WITH_BINDER)
 class HelloService : public android::BBinder {
