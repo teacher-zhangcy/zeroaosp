@@ -186,7 +186,7 @@ jobs:
           OK=no
           for std in c++20 c++17; do
             echo "-- try -std=$std"
-            if "$TC/x86_64-linux-android30-clang++" -O2 -std=$std -Wall \
+            if "$TC/x86_64-linux-android30-clang++" -O2 -std=$std -Wall -fno-rtti -fno-exceptions \
                  -DDSH_WITH_BINDER=1 -DDSH_DEVICE_LINKED=1 $INC \
                  m1/service/dsh_hello_service.cpp \
                  -Ldevlibs -lbinder -lutils -lcutils -lbase -llog -lc++ \
@@ -204,22 +204,57 @@ jobs:
             "$TC/llvm-nm" -u dsh_hello_service.devbinder 2>/dev/null | head -10 || true
           fi
 
-      - name: 路径1 验证 —— 推 devbinder 版，看 service check / service list / dumpsys（判定口径：正命中）
+      - name: 路径2 —— NDK C-API + 设备端预编译 libbinder_ndk.so（自声明 AServiceManager_addService）
+        run: |
+          set -ux
+          NDK="$SDK/ndk/$(ls "$SDK/ndk" | sort -V | tail -1)"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p devlibs
+          echo "=== (a) 拉设备上的 libbinder_ndk.so 作为链接桩（这就是"预编译 libbinder 产物"，来源=设备镜像本身） ==="
+          adb pull /system/lib64/libbinder_ndk.so devlibs/libbinder_ndk.so && echo "PULL_OK libbinder_ndk.so ($(stat -c%s devlibs/libbinder_ndk.so) B)" || echo "PULL_FAILED libbinder_ndk.so"
+          echo "=== (b) 设备那支是否导出 AServiceManager_addService（NDK 自带的那支不导出，见 T-006 §3.3） ==="
+          for f in devlibs/libbinder_ndk.so; do
+            [ -f "$f" ] && { echo "-- $f"; "$TC/llvm-nm" -D "$f" 2>/dev/null | grep -E 'AServiceManager_addService|AIBinder_new|AIBinder_Class_define' || echo "   (无匹配)"; }
+          done
+          echo "=== (c) 编译（C API，无 vtable / 无 RTTI 问题） ==="
+          if "$TC/x86_64-linux-android30-clang++" -O2 -std=c++17 -static-libstdc++ -DDSH_WITH_BINDER_NDK=1 \
+               m1/service/dsh_hello_service.cpp -Ldevlibs -lbinder_ndk \
+               -Wl,-rpath-link,devlibs -Wl,--allow-shlib-undefined \
+               -o dsh_hello_service.ndkbinder 2>&1 | tail -20; then
+            if [ -f dsh_hello_service.ndkbinder ]; then
+              echo "NDKBINDER_BUILD_OK"; file dsh_hello_service.ndkbinder; sha256sum dsh_hello_service.ndkbinder | tee dsh.ndkbinder.sha256
+              "$TC/llvm-readelf" -d dsh_hello_service.ndkbinder | grep -i NEEDED || true
+              "$TC/llvm-nm" -u dsh_hello_service.ndkbinder 2>/dev/null | head -10 || true
+            else
+              echo "NDKBINDER_BUILD_FAILED(no output)"
+            fi
+          else
+            echo "NDKBINDER_BUILD_FAILED(compile)"
+          fi
+
+      - name: 路径1/2 验证 —— 分别推 devbinder 与 ndkbinder，逐支看 service check / service list / dumpsys
         run: |
           set -x
           test "$(cat /tmp/boot_ok.txt)" = "BOOT_OK=yes" || echo "WARN: 未确认启动完成，仍继续观测"
           adb root || true; sleep 5; adb wait-for-device || true
           adb shell setenforce 0 || true
-          if [ ! -f dsh_hello_service.devbinder ]; then echo "NO_DEVBINDER_BINARY（路径1 编译未产出）"; exit 0; fi
-          adb push dsh_hello_service.devbinder /data/local/tmp/dsh_devbinder || true
-          adb shell chmod 755 /data/local/tmp/dsh_devbinder || true
-          adb shell "setsid /data/local/tmp/dsh_devbinder > /data/local/tmp/dsh_dev.log 2>&1 < /dev/null &" || true
-          sleep 8
-          echo "=== /data/local/tmp/dsh_dev.log ==="; adb shell cat /data/local/tmp/dsh_dev.log || true
-          echo "=== service check dsh_hello_service ==="; adb shell 'service check dsh_hello_service' || true
-          echo "=== service list | grep -i dsh ==="; adb shell 'service list | grep -i dsh' || true
-          echo "=== dumpsys dsh_hello_service ==="; adb shell 'dumpsys dsh_hello_service' || true
-          echo "=== ps -A | grep -i dsh ==="; adb shell 'ps -A | grep -i dsh' || true
+          for tag in devbinder ndkbinder; do
+            bin="dsh_hello_service.$tag"
+            echo "############ $tag ############"
+            if [ ! -f "$bin" ]; then echo "SKIP_${tag}：二进制未编出（编译阶段已给原始错误）"; continue; fi
+            ls -l "$bin"
+            adb push "$bin" "/data/local/tmp/dsh_$tag" || true
+            adb shell chmod 755 "/data/local/tmp/dsh_$tag" || true
+            adb shell "setsid /data/local/tmp/dsh_$tag > /data/local/tmp/dsh_$tag.log 2>&1 < /dev/null &" || true
+            sleep 7
+            echo "=== [$tag] 自身日志 ==="; adb shell cat "/data/local/tmp/dsh_$tag.log" || true
+            echo "=== [$tag] ps ==="; adb shell 'ps -A | grep -i dsh' || true
+            echo "=== [$tag] service check dsh_hello_service ==="; adb shell 'service check dsh_hello_service' || true
+            echo "=== [$tag] service list | grep -i dsh ==="; adb shell 'service list | grep -i dsh' || true
+            echo "=== [$tag] dumpsys dsh_hello_service ==="; adb shell 'dumpsys dsh_hello_service' || true
+            adb shell "pkill -f dsh_$tag" || true
+            sleep 2
+          done
 
       - name: P4 保底 —— 推 stub 版并观测进程（006 已达成的部分，作对照）
         run: |
