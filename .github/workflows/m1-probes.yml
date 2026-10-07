@@ -137,12 +137,18 @@ jobs:
           ln -sfn /tmp/soong     /tmp/gopath/src/android/soong
           ln -sfn /tmp/blueprint /tmp/gopath/src/github.com/google/blueprint
           export GOPATH=/tmp/gopath GO111MODULE=off GOFLAGS=
-          cd /tmp/gopath/src/android/soong
-          go build -o /tmp/bpfix ./bpfix/cmd && echo "BPFIX_BUILT OK"
-          cp /tmp/bpfix dist/bpfix || true
-          cd "${GITHUB_WORKSPACE}"
-          echo "=== bpfix 对我们的 Android.bp 的解析结果 ==="
-          /tmp/bpfix -o dist/Android.bp.fixed m1/service/Android.bp && echo "BPFIX_PARSE_OK" || echo "BPFIX_PARSE_FAILED"
+          ( cd /tmp/gopath/src/android/soong && go build -o /tmp/bpfixtool ./bpfix/cmd ) && echo "BPFIX_BUILT OK"
+          mkdir -p dist
+          echo "=== 工具自称（在二进制里找 bpfix / bpfmt 字串） ==="
+          grep -a -o -E 'bpfix|bpfmt' /tmp/bpfixtool | sort | uniq -c | head -5 || true
+          echo "=== 用法 ==="
+          /tmp/bpfixtool -h 2>&1 | head -12 || true
+          echo "=== 默认模式解析我们的 Android.bp（能被 Soong 的 Blueprint 解析器读入即算通过） ==="
+          /tmp/bpfixtool m1/service/Android.bp > dist/Android.bp.parsed && echo "BPFIX_PARSE_OK" || echo "BPFIX_PARSE_FAILED"
+          echo "=== 解析产物前 8 行 ==="
+          head -8 dist/Android.bp.parsed || true
+          echo "=== -l 模式（列出需要规范化的文件；能列出同样证明解析成功） ==="
+          /tmp/bpfixtool -l m1/service/Android.bp || true
 
       - name: 汇总产物 + 校验和
         run: |
