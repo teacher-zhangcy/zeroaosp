@@ -1,0 +1,16 @@
+# dsh_hello_service.te — SELinux 域**占位**（M1 冒烟素材，尚未接入任何策略构建）
+#
+# 范式参考：system/sepolicy/public/*.te（域声明）与 system/sepolicy/private/*.te（域规则）
+# 说明：下面是"自研服务要能注册 Binder 服务"所需的最小形状；**未在真机上验证**，
+#       接入构建前必须按目标分支的实际策略接口（service_manager_type / add 权限）校正。
+
+type dsh_hello_service, domain;
+type dsh_hello_service_exec, exec_type, file_type, system_file_type;
+
+init_daemon_domain(dsh_hello_service)
+
+# 允许本域向 servicemanager 注册自己的服务名（服务名需在 service_contexts 中登记）
+allow dsh_hello_service servicemanager:service_manager add;
+
+# 占位：若后续要暴露给 system_server/其他域 find，需在 service_contexts 里加一行并在
+# 对应域的策略里 allow <域> dsh_hello_service:service_manager find;

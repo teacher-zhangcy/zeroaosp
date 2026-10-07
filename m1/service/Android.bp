@@ -1,0 +1,45 @@
+// dsh_hello_service — zeroaosp M1 冒烟用的最小系统服务（Soong/Android.bp 素材）
+//
+// 范式参考：frameworks/native/cmds/servicemanager/Android.bp:10-40（cc_defaults + shared_libs 写法）
+// 注意：本文件当前**未接入任何 AOSP 树构建**；它是"M1 之后要编的真实定义"。
+//       进 system.img 需要：产品里 PRODUCT_PACKAGES += dsh_hello_service
+//       （落点参考 build/make/target/product/base_system.mk:18 与 :299 的 PRODUCT_PACKAGES 段）
+
+package {
+    default_applicable_licenses: ["zeroaosp_m1_license"],
+}
+
+license {
+    name: "zeroaosp_m1_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-Apache-2.0"],
+    license_text: ["../../LICENSE"],
+}
+
+cc_binary {
+    name: "dsh_hello_service",
+    srcs: ["dsh_hello_service.cpp"],
+    cpp_std: "c++17",
+
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-DDSH_WITH_BINDER=1",
+    ],
+
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "libcutils",
+        "liblog",
+        "libutils",
+    ],
+
+    // init 片段随二进制一起装到 /system/etc/init/
+    init_rc: ["dsh_hello_service.rc"],
+
+    strip: {
+        none: true,
+    },
+}

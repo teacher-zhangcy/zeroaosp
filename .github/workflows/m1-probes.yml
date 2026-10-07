@@ -1,0 +1,137 @@
+# m1-probes.yml — M1 收口两步探测（都是"便宜、快、可回滚"的动作）
+#
+#   P1  kvm-probe    : 只读探测 runner 有没有 /dev/kvm → 决定「Cuttlefish 能不能在 CI 启动」
+#   P2  build-service: 把 m1/service 的最小自研 native 服务编出来（host 自测 + Android NDK 目标），
+#                      并把 Android.bp 交给 Soong 自带解析器 bpfix 做语法校验（尽力而为，不阻塞）
+#
+# 边界：不下载/不入库任何预构镜像；不碰 AOSP 整树；全部只读 + 产物走 artifact（体积小）。
+name: m1-probes
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'm1/**'
+      - '.github/workflows/m1-probes.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m1-probes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ── P1：KVM 探测（原始输出优先，判定在最后） ─────────────────────────────
+  kvm-probe:
+    name: P1 KVM 探测
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: 采集 KVM / 虚拟化事实
+        run: |
+          set -x
+          echo "=== /dev/kvm ==="
+          ls -l /dev/kvm || echo "ls: cannot access '/dev/kvm': No such file or directory"
+          echo "=== 身份 ==="; id; uname -a
+          echo "=== 权限位 ==="
+          if [ -r /dev/kvm ]; then echo "READABLE=yes"; else echo "READABLE=no"; fi
+          if [ -w /dev/kvm ]; then echo "WRITABLE=yes"; else echo "WRITABLE=no"; fi
+          echo "=== CPU 虚拟化标志 ==="
+          grep -m1 -oE 'vmx|svm' /proc/cpuinfo || echo "no vmx/svm in /proc/cpuinfo"
+          echo "count=$(grep -c -E 'vmx|svm' /proc/cpuinfo || true)"
+          echo "=== 虚拟化环境 ==="; systemd-detect-virt || echo "systemd-detect-virt failed"
+          echo "=== 内核模块 ==="; lsmod | grep -i kvm || echo "no kvm modules listed"
+          echo "=== kvm-ok（cpu-checker） ==="
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq cpu-checker >/dev/null 2>&1 || echo "cpu-checker install failed"
+          kvm-ok || echo "kvm-ok: not OK"
+          echo "=== 资源 ==="; nproc; free -h | head -2; df -h / | tail -1
+
+      - name: 判定
+        run: |
+          set -eu
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "VERDICT=KVM_AVAILABLE  → 本仓 runner 具备跑 Cuttlefish 的虚拟化条件"
+          else
+            echo "VERDICT=KVM_UNAVAILABLE → 本仓 runner 无法直接跑 Cuttlefish（如实报告，不绕过）"
+          fi
+
+  # ── P2：最小自研 native 服务冒烟 ─────────────────────────────────────────
+  build-service:
+    name: P2 自研 native 服务冒烟
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境事实
+        run: |
+          set -x
+          nproc; free -h | head -2; df -h / | tail -1
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          ls "${ANDROID_HOME}/ndk" 2>/dev/null || echo "no preinstalled NDK"
+          g++ --version | head -1
+          go version || echo "no go"
+
+      - name: host 构建 + 自测（证明进程能起来）
+        run: |
+          set -eux
+          mkdir -p dist
+          g++ -O2 -std=c++17 -DDSH_BUILD_HOST=1 -Wall -Wextra \
+              m1/service/dsh_hello_service.cpp -o dist/dsh_hello_service.host
+          ./dist/dsh_hello_service.host --selftest | tee dist/selftest.log
+
+      - name: NDK 目标构建（Android ELF 产物）
+        continue-on-error: true
+        run: |
+          set -eux
+          NDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}/ndk"
+          if [ -d "$NDK_ROOT" ] && [ -n "$(ls -A "$NDK_ROOT" 2>/dev/null)" ]; then
+            NDK="${NDK_ROOT}/$(ls "$NDK_ROOT" | sort -V | tail -1)"
+          else
+            echo "no preinstalled NDK → download r26d"
+            curl -sSL -o /tmp/ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+            unzip -q /tmp/ndk.zip -d /tmp
+            NDK=/tmp/android-ndk-r26d
+          fi
+          echo "NDK=$NDK"
+          TC="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          "${TC}/aarch64-linux-android26-clang++" -O2 -std=c++17 -Wall -Wextra \
+              m1/service/dsh_hello_service.cpp -o dist/dsh_hello_service.aarch64
+          "${TC}/x86_64-linux-android26-clang++"  -O2 -std=c++17 -Wall -Wextra \
+              m1/service/dsh_hello_service.cpp -o dist/dsh_hello_service.x86_64
+          file dist/dsh_hello_service.aarch64 dist/dsh_hello_service.x86_64
+
+      - name: Soong 解析器 bpfix 校验 Android.bp（尽力而为）
+        continue-on-error: true
+        run: |
+          set -eux
+          git clone --depth=1 https://android.googlesource.com/platform/build/soong     /tmp/soong     || \
+          git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/build/soong /tmp/soong
+          git clone --depth=1 https://android.googlesource.com/platform/build/blueprint /tmp/blueprint || \
+          git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/build/blueprint /tmp/blueprint
+          mkdir -p /tmp/gopath/src/android
+          ln -sfn /tmp/soong /tmp/gopath/src/android/soong
+          export GOPATH=/tmp/gopath GO111MODULE=off GOFLAGS=
+          cd /tmp/gopath/src/android/soong
+          go build -o /tmp/bpfix ./bpfix/cmd && echo "BPFIX_BUILT OK"
+          cp /tmp/bpfix dist/bpfix || true
+          cd "${GITHUB_WORKSPACE}"
+          echo "=== bpfix 对我们的 Android.bp 的解析结果 ==="
+          /tmp/bpfix -o dist/Android.bp.fixed m1/service/Android.bp && echo "BPFIX_PARSE_OK" || echo "BPFIX_PARSE_FAILED"
+
+      - name: 汇总产物 + 校验和
+        run: |
+          set -eux
+          cp m1/service/Android.bp m1/service/dsh_hello_service.rc \
+             m1/service/dsh_hello_service.te m1/service/file_contexts.snippet dist/ || true
+          ls -l dist/
+          sha256sum dist/* | tee dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-hello-service-spike
+          path: dist/
+          if-no-files-found: warn

@@ -10,6 +10,7 @@
 | `manifest/zeroaosp-14.xml` | AOSP 14 **子集清单**：11 个 project，钉 `refs/tags/android-14.0.0_r1` |
 | `patches/` | 下游**补丁栈目录规范**（编号规则 / 目标路径字段 / 一句话理由 / 禁止项） |
 | `.github/workflows/build-modules.yml` | 云端流水线：**只编独立模块**；整机 `system.img` 不上 CI |
+| `m1/` | M1 收口冒烟素材：最小自研 native 服务 + Soong/init/sepolicy 素材（不随镜像发布） |
 
 ## 快速开始 / Quick start
 

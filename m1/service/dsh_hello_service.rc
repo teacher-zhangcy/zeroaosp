@@ -1,0 +1,17 @@
+# dsh_hello_service.rc — init 片段（M1 冒烟素材；进镜像时由 Android.bp 的 init_rc 装载）
+#
+# 范式参考：frameworks/native/cmds/servicemanager/servicemanager.rc:1-15
+#           frameworks/base/cmds/… 亦同构；`service <name> <path>` 段式见 system/core/rootdir/init.rc:493
+#
+# 语义：不随 class 自动起（disabled），等系统启动完成后由 proterty 触发，
+#       避免和 zygote/system_server 抢早起资源。
+
+service dsh_hello_service /system/bin/dsh_hello_service
+    class late_start
+    user system
+    group system
+    disabled
+    # 不设 oneshot：服务的 binder 线程池常驻（joinThreadPool）
+
+on property:sys.boot_completed=1
+    start dsh_hello_service
