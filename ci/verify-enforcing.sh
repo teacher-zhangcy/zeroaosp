@@ -148,9 +148,13 @@ step "L2 策略层：注入 patches 规则（CIL 形式）→ 加载 → enforci
 mkdir -p policy
 "$ADB" shell 'ls /system/etc/selinux/*.cil /system/etc/selinux/mapping/*.cil 2>/dev/null' > "$ARTIFACT_DIR/cil_list.txt" 2>&1 || true
 sed 's/^/  /' "$ARTIFACT_DIR/cil_list.txt"
-for f in plat_sepolicy.cil plat_pub_versioned.cil system_ext_sepolicy.cil product_sepolicy.cil; do
-  "$ADB" pull "/system/etc/selinux/$f" "policy/$f" > /dev/null 2>&1 || info "（设备上没有 $f）"
+for f in plat_sepolicy.cil; do
+  "$ADB" pull "/system/etc/selinux/$f" "policy/$f" > /dev/null 2>&1 || info "（设备上没有 /system/etc/selinux/$f）"
 done
+# vendor 策略依赖"平台公共策略的版本化副本"，它在 vendor 分区（AOSP 的 secilc 输入顺序：pub_versioned → plat → vendor）
+"$ADB" pull /vendor/etc/selinux/plat_pub_versioned.cil policy/plat_pub_versioned.cil > /dev/null 2>&1 \
+  || "$ADB" pull /system/etc/selinux/plat_pub_versioned.cil policy/plat_pub_versioned.cil > /dev/null 2>&1 \
+  || info "（两处都没有 plat_pub_versioned.cil）"
 "$ADB" pull /vendor/etc/selinux/vendor_sepolicy.cil policy/vendor_sepolicy.cil > /dev/null 2>&1 || info "（设备上没有 vendor_sepolicy.cil）"
 ls -l policy | sed 's/^/  /'
 # (b) 注入我们的规则
