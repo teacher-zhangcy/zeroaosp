@@ -57,4 +57,4 @@
 (allow shell dsh_quickjsd (process (transition)))
 (allow shell dsh_quickjsd_exec (file (read open execute map getattr)))
 (allow dsh_quickjsd shell (fd (use)))
-(allow dsh_quickjsd shell (fifo_file (read write))))
+(allow dsh_quickjsd shell (fifo_file (read write)))

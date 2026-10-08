@@ -155,7 +155,14 @@ done
 ls -l policy | sed 's/^/  /'
 # (b) 注入我们的规则
 cp "$CIL_FILE" "policy/zz-${DOMAIN_NAME}.cil"
-grep -c '' "policy/zz-${DOMAIN_NAME}.cil" | xargs -I{} info "注入的 CIL 行数 = {}"
+grep -c '' "policy/zz-${DOMAIN_NAME}.cil" > "$ARTIFACT_DIR/cil_lines.txt" 2>&1 || true
+info "注入的 CIL 行数 = $(cat "$ARTIFACT_DIR/cil_lines.txt")"
+python3 -c "
+b=0
+for l in open('policy/zz-${DOMAIN_NAME}.cil',encoding='utf-8'):
+    s=l.split(';')[0]
+    b+=s.count('(')-s.count(')')
+print('CIL_PAREN=' + ('balanced' if b==0 else 'unbalanced:%d'%b))" 2>&1 | tee "$ARTIFACT_DIR/cil_balance.txt" || true
 # (c) 运行器上找 secilc
 SECILC="$(command -v secilc || true)"
 if [ -z "$SECILC" ]; then
