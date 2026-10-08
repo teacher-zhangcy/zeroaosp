@@ -126,7 +126,7 @@ step "L1 原始层：stock enforcing（不改任何策略、不做 setenforce/ch
 sleep 8
 "$ADB" shell "cat /data/local/tmp/l1.log" > "$ARTIFACT_DIR/L1_self_log.txt" 2>&1 || true
 "$ADB" shell "service check $SERVICE_NAME" > "$ARTIFACT_DIR/L1_service_check.txt" 2>&1 || true
-"$ADB" shell 'ps -A' | grep -E "[[:space:]]' > "$ARTIFACT_DIR/L1_ps.txt" 2>&1 || true
+"$ADB" shell 'ps -A' > "$ARTIFACT_DIR/L1_ps.txt" 2>&1 || true
 "$ADB" shell 'dmesg' > "$ARTIFACT_DIR/L1_dmesg.txt" 2>&1 || true
 "$ADB" shell 'logcat -d -b all -t 300' > "$ARTIFACT_DIR/L1_logcat.txt" 2>&1 || true
 info "--- L1 自身日志（原文） ---"; sed 's/^/  /' "$ARTIFACT_DIR/L1_self_log.txt"
