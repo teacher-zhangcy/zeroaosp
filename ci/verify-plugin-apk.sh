@@ -420,11 +420,102 @@ else
   grep -q 'PLUGIN_FILLED' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：platform 采集里没有 PLUGIN_FILLED"
   grep -q 'createTile spec=' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：createTile spec= 未出现"
   grep -q 'PLUGIN_LOADED' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：PLUGIN_LOADED 未出现"
-  RESID="$(grep -c 'DshQsTile' "$ARTIFACT_DIR/reverted_check.txt" 2>/dev/null || echo 0)"
+  RESID="$(grep -c 'DshQsTile' "$ARTIFACT_DIR/reverted_check.txt" 2>/dev/null | head -1)"
+  RESID="${RESID:-0}"
+  case "$RESID" in ''|*[!0-9]*) RESID=0;; esac
   [ "$RESID" -eq 0 ] || fail "断言(b) 失败：卸载后仍有 $RESID 行 DshQsTile 残留"
   printf 'ASSERT_1_PLUGIN_FILLED_AND_CREATETILE=OK\nASSERT_2_REVERTED_ZERO=OK\n' >> "$ARTIFACT_DIR/verdict.txt"
   info "✅ 断言全过：PLUGIN_LOADED+PLUGIN_FILLED+createTile spec= ✓ ；卸载后可逆归零（残留 0 行）✓"
   mark "STAGE6E_OK"
+  # T-033 第二刀：OverlayPlugin（shade 扩展帧通道）—— 非致命段：不管成败都不影响第一刀闸门
+  step "6f. 第二刀：OverlayPlugin（S4 shade 扩展帧通道）"
+  set +e
+  mkdir -p plugin2-src/com/zeroaosp/plugin/overlay out-classes2 out-dex2
+  cat > plugin2-src/com/zeroaosp/plugin/overlay/ZeroAospOverlayPlugin.java <<'JAVA2'
+package com.zeroaosp.plugin.overlay;
+
+import android.content.Context;
+import android.util.Log;
+import com.android.systemui.plugins.OverlayPlugin;
+import com.android.systemui.plugins.annotations.ProvidesInterface;
+import com.android.systemui.plugins.annotations.Requires;
+
+/** zeroaosp M2 第二刀：shade 扩展帧（OverlayPlugin 通道）。范式照 SampleOverlayPlugin.java:29-41。 */
+@ProvidesInterface(action = OverlayPlugin.ACTION, version = OverlayPlugin.VERSION)
+@Requires(target = OverlayPlugin.class, version = OverlayPlugin.VERSION)
+public class ZeroAospOverlayPlugin implements OverlayPlugin {
+    public static final String TAG = "DshShade";
+
+    public ZeroAospOverlayPlugin() {
+        Log.i(TAG, "slot state=PLUGIN_LOADED cls=" + getClass().getName());
+    }
+
+    @Override
+    public void onCreate(Context sysuiContext, Context pluginContext) {
+        Log.i(TAG, "slot state=PLUGIN_VIEW onCreate sysuiCtx=" + (sysuiContext != null)
+                + " pluginCtx=" + (pluginContext != null));
+    }
+
+    @Override
+    public void onDestroy() {
+        Log.i(TAG, "slot state=PLUGIN_VIEW onDestroy");
+    }
+
+    public int getVersion() { return OverlayPlugin.VERSION; }
+}
+JAVA2
+  javac -nowarn -d out-classes2 -cp "$AJ:$ARTIFACT_DIR/systemui-plugin-interfaces.jar" $(find plugin2-src -name '*.java') > "$ARTIFACT_DIR/javac_shade.log" 2>&1
+  JRC=$?
+  if [ "$JRC" -ne 0 ]; then
+    info "❌ 第二刀编译不过（原始报错，表头取前 8 条）："
+    grep 'error:' "$ARTIFACT_DIR/javac_shade.log" | head -8 | sed 's/^/    /'
+    info "→ 按任务单 ⑦：记录为第二刀障碍/契约差异，不阻断第一刀闸门"
+    mark "STAGE6F_JAVAC_FAIL"
+  else
+    info "第二刀 javac OK，class 数 = $(find out-classes2 -name '*.class' | wc -l)"
+    find out-classes2 -name '*.class' > "$ARTIFACT_DIR/impl_classes2.txt"
+    find out-iface -name '*.class' >> "$ARTIFACT_DIR/impl_classes2.txt"
+    "$SDK/build-tools/$BT/d8" --min-api 26 --output out-dex2 @"$ARTIFACT_DIR/impl_classes2.txt" > "$ARTIFACT_DIR/d8_shade.log" 2>&1
+    cat > plugin-res/AndroidManifest.shade.xml <<'XML2'
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.zeroaosp.plugin">
+    <uses-permission android:name="com.android.systemui.permission.PLUGIN" />
+    <application android:label="zeroaosp shade plugin">
+        <service android:name="com.zeroaosp.plugin.overlay.ZeroAospOverlayPlugin" android:exported="false">
+            <intent-filter>
+                <action android:name="com.android.systemui.action.PLUGIN_OVERLAY" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>
+XML2
+    "$SDK/build-tools/$BT/aapt2" link -o out-apk2/unsigned.apk --manifest plugin-res/AndroidManifest.shade.xml \
+      --min-sdk-version 26 --target-sdk-version 34 -I "$AJ" > "$ARTIFACT_DIR/aapt2_shade.log" 2>&1
+    ( cd out-dex2 && zip -q -j ../out-apk2/unsigned.apk classes.dex )
+    "$SDK/build-tools/$BT/zipalign" -f 4 out-apk2/unsigned.apk out-apk2/aligned.apk > /dev/null 2>&1
+    "$SDK/build-tools/$BT/apksigner" sign --ks pk/platform.p12 --ks-pass pass:android --ks-key-alias platform \
+      --out "$ARTIFACT_DIR/zeroaosp-shade-plugin.apk" out-apk2/aligned.apk > "$ARTIFACT_DIR/apksigner_shade.log" 2>&1
+    if [ -f "$ARTIFACT_DIR/zeroaosp-shade-plugin.apk" ]; then
+      sha256sum "$ARTIFACT_DIR/zeroaosp-shade-plugin.apk" | tee "$ARTIFACT_DIR/apk_shade.sha256"
+      "$ADB" uninstall com.zeroaosp.plugin > /dev/null 2>&1
+      "$ADB" install -r -g "$ARTIFACT_DIR/zeroaosp-shade-plugin.apk" | tee "$ARTIFACT_DIR/adb_install_shade.txt"
+      "$ADB" reboot > /dev/null 2>&1; sleep 30; "$ADB" wait-for-device; wait_boot; sleep 25
+      collect shade
+      info "第二刀 DshShade 行 →"; grep -i 'DshShade' "$ARTIFACT_DIR/logcat_full_shade.txt" | head -8 | sed 's/^/    /'
+      info "第二刀 PluginActionManager 行 →"; grep -iE 'PluginActionManager|InvalidVersionException|Missing required' "$ARTIFACT_DIR/logcat_full_shade.txt" | head -6 | sed 's/^/    /'
+      mark "STAGE6F_OK"
+      # 第二刀可逆
+      "$ADB" uninstall com.zeroaosp.plugin > /dev/null 2>&1
+      "$ADB" reboot > /dev/null 2>&1; sleep 30; "$ADB" wait-for-device; wait_boot; sleep 20
+      collect shade_rev
+      RESID2="$(grep -c 'DshShade' "$ARTIFACT_DIR/logcat_full_shade_rev.txt" 2>/dev/null | head -1)"; RESID2="${RESID2:-0}"
+      info "第二刀可逆：卸载后 DshShade 残留 = $RESID2 行"
+      mark "STAGE6F_REVERT_DONE"
+    fi
+  fi
+  set -e
+  mark "STAGE6F_DONE"
   mark "STAGE6B_OK"
 fi
 printf '\n--- stages.log ---\n'; cat "$ARTIFACT_DIR/stages.log" | sed 's/^/  /'
