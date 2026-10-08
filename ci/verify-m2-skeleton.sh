@@ -19,6 +19,7 @@ fail() { printf '\n!!!!! 失败: %s\n' "$*" >&2; exit 1; }
 trap 'printf "\n!! 脚本在第 %s 行非预期退出（exit=%s）\n" "$LINENO" "$?" >&2' ERR
 
 mkdir -p "$ARTIFACT_DIR"
+ARTIFACT_DIR="$(cd "$ARTIFACT_DIR" && pwd)"   # 绝对化：脚本中途会 cd 进 base/，相对路径会失效
 df -h / | tee "$ARTIFACT_DIR/df_before.txt"
 
 step "1. 浅克隆 frameworks/base（$TAG）"
