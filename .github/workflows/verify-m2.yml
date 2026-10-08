@@ -1,0 +1,58 @@
+# verify-m2.yml — M2 骨架验证（薄壳）
+#
+# 两个 job：
+#   1) d0-gate      : D0 闸门（复用 ci/verify-emulator.sh，147 秒那套）
+#   2) m2-skeleton  : 把 patches/0002、0003 应用到真 frameworks/base 浅克隆（git am），
+#                     并实测「免全树能不能测 Java 改动」（javac 无 classpath / Soong 前置路径 / 磁盘时长）
+name: verify-m2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ci/**'
+      - 'patches/**'
+      - '.github/workflows/verify-m2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  d0-gate:
+    name: D0 闸门（emulator 冒烟）
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      SDK: /usr/local/lib/android/sdk
+      ARTIFACT_DIR: artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - name: 跑 D0 闸门（ci/verify-emulator.sh）
+        run: bash ci/verify-emulator.sh
+      - name: 上传产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: d0-gate-artifacts
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: warn
+
+  m2-skeleton:
+    name: M2 骨架（补丁 git am + 免全树实测）
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      ARTIFACT_DIR: artifacts-m2
+    steps:
+      - uses: actions/checkout@v4
+      - name: 应用补丁并实测（ci/verify-m2-skeleton.sh）
+        run: bash ci/verify-m2-skeleton.sh
+      - name: 上传产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m2-skeleton-artifacts
+          path: artifacts-m2/
+          retention-days: 14
+          if-no-files-found: warn
