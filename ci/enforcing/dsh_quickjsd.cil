@@ -1,0 +1,60 @@
+;; ci/enforcing/dsh_quickjsd.cil — 验证形态：patches/0001 里 .te 规则的 CIL 等价形式
+;;
+;; 交付形态 = system/sepolicy/private/dsh_quickjsd.te + private/service_contexts + private/file_contexts
+;;            （走 AOSP 构建系统：init_daemon_domain 起进程、plat_service_contexts 做名字映射）
+;; 验证形态 = 本文件：因为免费 runner 上没有完整树可以重编镜像，所以把等价规则作为 CIL
+;;            追加到设备策略上动态加载（secilc 编译 → /sys/fs/selinux/load），
+;;            再用 chcon + type_transition 让进程进入同一个域 dsh_quickjsd。
+;; 两部分规则集一一对应；机制不同之处在回报里逐条说明。
+
+;; ── 1. 类型声明（对应 .te 的 type / typeattribute 与 init_daemon_domain 的隐式声明） ──
+(type dsh_quickjsd)
+(typeattributeset domain (dsh_quickjsd))
+(typeattributeset coredomain (dsh_quickjsd))
+(type dsh_quickjsd_exec)
+(typeattributeset file_type (dsh_quickjsd_exec))
+(typeattributeset exec_type (dsh_quickjsd_exec))
+(typeattributeset system_file_type (dsh_quickjsd_exec))
+(type dsh_quickjsd_service)
+(typeattributeset service_manager_type (dsh_quickjsd_service))
+
+;; ── 2. init → dsh_quickjsd 的域转换（等价 init_daemon_domain(dsh_quickjsd)） ──
+(typetransition init dsh_quickjsd_exec process dsh_quickjsd)
+(allow init dsh_quickjsd_exec (file (read open getattr map execute)))
+(allow init dsh_quickjsd (process (transition)))
+
+;; ── 3. binder：等价 binder_use(dsh_quickjsd) ──
+(allow dsh_quickjsd servicemanager (binder (call transfer)))
+(allow servicemanager dsh_quickjsd (binder (call transfer)))
+(allow servicemanager dsh_quickjsd (dir (search)))
+(allow servicemanager dsh_quickjsd (file (read open)))
+(allow servicemanager dsh_quickjsd (process (getattr)))
+
+;; ── 4. 注册：等价 add_service(dsh_quickjsd, dsh_quickjsd_service) ──
+(allow dsh_quickjsd dsh_quickjsd_service (service_manager (add find)))
+
+;; ── 5. 服务自身的 binder 语义 + 让 shell/dumpsys 能观测到（M1/M2 的观测手段） ──
+(allow dsh_quickjsd dsh_quickjsd_service (binder (call transfer)))
+(allow shell dsh_quickjsd_service (binder (call transfer)))
+(allow shell dsh_quickjsd_service (service_manager (find)))
+
+;; ── 6. 最小运行权限（不足的部分由 L1/L2 抓到的 avc denial 原文驱动补齐） ──
+(allow dsh_quickjsd dsh_quickjsd_exec (file (read open execute map getattr)))
+(allow dsh_quickjsd system_file (file (read open map getattr execute)))
+(allow dsh_quickjsd tmpfs (file (read open map getattr execute)))
+(allow dsh_quickjsd shell_data_file (file (write create open append getattr map)))
+(allow dsh_quickjsd devpts (chr_file (read write open getattr ioctl)))
+(allow dsh_quickjsd null_device (chr_file (read write open getattr)))
+(allow dsh_quickjsd self (process (fork)))
+(allow dsh_quickjsd self (binder (call transfer)))
+(allow dsh_quickjsd self (fifo_file (read write open getattr)))
+(allow dsh_quickjsd dsh_quickjsd (dir (search)))
+(allow dsh_quickjsd dsh_quickjsd (file (read open getattr)))
+(allow dsh_quickjsd dsh_quickjsd (process (getattr getpgid getpgid getsched signal sigchld rlimitinh siginh)))
+
+;; ── 7. 验证脚手架（**不是交付形态**，只为在没有 init 服务段的临时环境里把进程送进同一个域） ──
+(typetransition shell dsh_quickjsd_exec process dsh_quickjsd)
+(allow shell dsh_quickjsd (process (transition)))
+(allow shell dsh_quickjsd_exec (file (read open execute map getattr)))
+(allow dsh_quickjsd shell (fd (use)))
+(allow dsh_quickjsd shell (fifo_file (read write))))

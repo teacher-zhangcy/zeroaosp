@@ -1,0 +1,38 @@
+# verify-enforcing.yml — M2 入场券验证：enforcing 下合法注册成 Binder 服务（薄壳，全流程在 ci/verify-enforcing.sh）
+#
+# 分层（见脚本头注释）：L0 事实层 → L1 stock enforcing 原始 denial → L2 注入 patches 规则后在 enforcing 下断言
+name: verify-enforcing
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ci/**'
+      - 'patches/**'
+      - '.github/workflows/verify-enforcing.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  enforcing:
+    name: enforcing 注册验证
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      SDK: /usr/local/lib/android/sdk
+      ARTIFACT_DIR: artifacts-enforcing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 跑验证脚本（ci/verify-enforcing.sh）
+        run: bash ci/verify-enforcing.sh
+
+      - name: 上传产物（always，保留 14 天）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-enforcing-artifacts
+          path: artifacts-enforcing/
+          retention-days: 14
+          if-no-files-found: warn
