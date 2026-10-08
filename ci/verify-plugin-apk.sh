@@ -231,9 +231,17 @@ APK="$ARTIFACT_DIR/zeroaosp-qs-plugin.apk"
 if [ ! -f "$APK" ]; then
   info "APK 不存在 → 跳过实机"; mark "STAGE6B_SKIPPED_NO_APK"
 else
-  IMAGE="${IMAGE:-system-images;android-34;aosp_atd;x86_64}"
   sudo chmod 666 /dev/kvm || fail "KVM 权限失败"
-  sdkmanager "platform-tools" "emulator" "$IMAGE" > "$ARTIFACT_DIR/sdk_dev.log" 2>&1 || fail "装 emulator/镜像失败"
+  # T-022：换**完整系统镜像**（ATD 无 SystemUI）；候选按序尝试，谁先装上用谁
+  IMAGE=""
+  for cand in "system-images;android-34;google_apis;x86_64" "system-images;android-34;default;x86_64" "system-images;android-33;google_apis;x86_64" "system-images;android-34;aosp_atd;x86_64"; do
+    info "尝试镜像：$cand"
+    if sdkmanager "platform-tools" "emulator" "$cand" > "$ARTIFACT_DIR/sdk_dev_$(echo "$cand" | tr ';' '_').log" 2>&1; then
+      IMAGE="$cand"; printf 'IMAGE_USED=%s\n' "$cand" > "$ARTIFACT_DIR/image_used.txt"; info "== 采用镜像：$cand"; break
+    fi
+  done
+  [ -n "$IMAGE" ] || fail "所有候选镜像都装不上"
+  cat "$ARTIFACT_DIR/image_used.txt"
   ADB="$SDK/platform-tools/adb"
   EMU_BIN="$(command -v emulator || find "$SDK" -maxdepth 3 -type f -name emulator | head -1)"
   ( echo no | avdmanager create avd --force -n nag -k "$IMAGE" --device pixel_5 ) >/dev/null 2>&1 || true
@@ -241,6 +249,19 @@ else
   sleep 20; "$ADB" start-server >/dev/null 2>&1 || true; timeout 120 "$ADB" wait-for-device || true
   wait_boot() { local b=""; for i in $(seq 1 45); do b="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"; [ "$b" = "1" ] && return 0; sleep 10; done; return 1; }
   wait_boot || fail "模拟器未启动完成"
+  # T-022 硬门槛：SystemUI 必须在场，否则不许进入插件观测（三条命令任一有输出即可）
+  SUB=""
+  "$ADB" shell ps -A | grep -i systemui > "$ARTIFACT_DIR/systemui_presence_ps.txt" 2>&1
+  [ -s "$ARTIFACT_DIR/systemui_presence_ps.txt" ] && SUB="ps -A"
+  "$ADB" shell dumpsys activity services | grep -i systemui > "$ARTIFACT_DIR/systemui_presence_dumpsys.txt" 2>&1
+  [ -n "$SUB" ] || { [ -s "$ARTIFACT_DIR/systemui_presence_dumpsys.txt" ] && SUB="dumpsys activity services"; }
+  "$ADB" shell service list | grep -i statusbar > "$ARTIFACT_DIR/systemui_presence_servicelist.txt" 2>&1
+  [ -n "$SUB" ] || { [ -s "$ARTIFACT_DIR/systemui_presence_servicelist.txt" ] && SUB="service list|statusbar"; }
+  info "SystemUI 在场证明：来源 = $SUB"
+  head -3 "$ARTIFACT_DIR/systemui_presence_ps.txt" | sed 's/^/    /'
+  head -3 "$ARTIFACT_DIR/systemui_presence_servicelist.txt" | sed 's/^/    /'
+  printf 'SYSTEMUI_PRESENT_VIA=%s\n' "$SUB" >> "$ARTIFACT_DIR/verdict.txt"
+  [ -n "$SUB" ] || fail "SystemUI 不在场（三条命令全空）→ 按 T-022 硬门槛不许进入插件观测；镜像=$(cat "$ARTIFACT_DIR/image_used.txt")"
   "$ADB" shell getprop ro.build.type | tee "$ARTIFACT_DIR/build_type.txt"
   # 每时机固定 5 个产物
   collect() {
