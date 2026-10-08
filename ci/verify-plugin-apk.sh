@@ -126,20 +126,37 @@ package com.zeroaosp.plugin.qs;
 import android.content.Context;
 import android.util.Log;
 import com.android.systemui.plugins.annotations.ProvidesInterface;
+import com.android.systemui.plugins.annotations.Requires;
+import com.android.systemui.plugins.annotations.Requirements;
 import com.android.systemui.plugins.qs.QSFactory;
+import com.android.systemui.plugins.qs.QSIconView;
 import com.android.systemui.plugins.qs.QSTile;
 import com.android.systemui.plugins.qs.QSTileView;
 
 /**
  * zeroaosp M2 插件：QS 磁贴工厂（宿主零改动）。
- * 形状按 AOSP 权威契约：**普通 public 类 + 无参构造**
- *   - PluginInstance.java:339  Class.forName(...)
- *   - PluginInstance.java:300  return (T) cls.newInstance();
- *   - 对照 plugin/ExamplePlugin/.../SampleOverlayPlugin.java:30
- *     `public class SampleOverlayPlugin implements OverlayPlugin`
- * 因此**不 extends Service**（T-025 的 Service 形状导致加载后崩）。
+ * 形状按 AOSP 权威契约：普通 public 类 + 无参构造（PluginInstance Class.forName/newInstance）。
+ * T-031：补 @Requirements —— 缺的不是类而是**声明**（VersionInfo.addClass 读 @Requires 登记 target 类；
+ *        Requires.java:24-26 要求"每个插件至少为它实现的接口加 @Requires，接口 @DependsOn 到的类各加一个"）。
+ *        逐条对应 plugin/src/com/android/systemui/plugins/qs/*.java 的 @DependsOn 原文：
+ *          QSFactory.java:27  @ProvidesInterface(action=…,version=QSFactory.VERSION)  → 本类实现的接口
+ *          QSFactory.java:28  @DependsOn(target = QSTile.class)
+ *          QSFactory.java:29  @DependsOn(target = QSTileView.class)
+ *          QSTile.java:39     @DependsOn(target = QSIconView.class)
+ *          QSTile.java:40     @DependsOn(target = Callback.class)   (= QSTile$Callback)
+ *          QSTile.java:41     @DependsOn(target = Icon.class)       (= QSTile$Icon)
+ *          QSTile.java:42     @DependsOn(target = State.class)      (= QSTile$State)
  */
 @ProvidesInterface(action = QSFactory.ACTION, version = QSFactory.VERSION)
+@Requirements({
+        @Requires(target = QSFactory.class, version = QSFactory.VERSION),
+        @Requires(target = QSTile.class, version = QSTile.VERSION),
+        @Requires(target = QSTileView.class, version = QSTileView.VERSION),
+        @Requires(target = QSIconView.class, version = QSIconView.VERSION),
+        @Requires(target = QSTile.Callback.class, version = QSTile.Callback.VERSION),
+        @Requires(target = QSTile.Icon.class, version = QSTile.Icon.VERSION),
+        @Requires(target = QSTile.State.class, version = QSTile.State.VERSION)
+})
 public class ZeroAospQsFactory implements QSFactory {
     public static final String TAG = "DshQsTile";
 
