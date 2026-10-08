@@ -376,6 +376,10 @@ else
   else
     info "（p12 未生成，见 pk_fetch.log）"
   fi
+  # T-034 ① 作用域收口：6c–6f 全是"采集/安装/卸载/取证"，用 set +e 包住；
+  #   只有断言段重新 set -e。fail() 是显式 exit 1，红灯火语义不变。
+  #   本地自检纪律（上 CI 前必做）：`bash -n <本文件>` + `INJECT_FAILURE=1 bash <本文件>`（应停在阶段 0 且 exit 1）。
+  set +e
   # 分水岭判据：设备侧 SystemUI 的签名指纹
   "$ADB" shell dumpsys package com.android.systemui > "$ARTIFACT_DIR/systemui_dumpsys.txt" 2>&1
   grep -iE 'signatures=|signingCertificate|Signing Certificate|SHA-256|digest|apkSigningVersion' "$ARTIFACT_DIR/systemui_dumpsys.txt" | head -12 | tee "$ARTIFACT_DIR/systemui_certs_dumpsys.txt"
@@ -416,6 +420,7 @@ else
   mark "STAGE6D_OK"
   set -e
   # T-032 ① 第一刀回归断言（负向对照 = INJECT_FAILURE 那套：注入失败必须让 job 真红）
+  set -e
   step "6e. 第一刀回归断言"
   grep -q 'PLUGIN_FILLED' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：platform 采集里没有 PLUGIN_FILLED"
   grep -q 'createTile spec=' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：createTile spec= 未出现"
