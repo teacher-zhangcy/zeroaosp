@@ -125,20 +125,39 @@ grep -h 'createTile\|createTileView' base/packages/SystemUI/plugin/src/com/andro
 cat > plugin-src/com/zeroaosp/plugin/qs/ZeroAospQsFactory.java <<'JAVA'
 package com.zeroaosp.plugin.qs;
 
+import android.app.Service;
 import android.content.Context;
+import android.content.Intent;
+import android.os.IBinder;
 import android.util.Log;
 import com.android.systemui.plugins.annotations.ProvidesInterface;
 import com.android.systemui.plugins.qs.QSFactory;
 import com.android.systemui.plugins.qs.QSTile;
 import com.android.systemui.plugins.qs.QSTileView;
 
-/** zeroaosp M2 插件：QS 磁贴工厂（实现宿主既有契约，不改宿主一行）。自报 tag=DshQsTile。 */
+/**
+ * zeroaosp M2 插件：QS 磁贴工厂（实现宿主既有契约，不改宿主一行）。
+ * 必须 extends Service：宿主用 queryIntentServices(action) 发现插件（PluginActionManager:250-257），
+ * 清单里对应 <service> + <intent-filter>，不是 meta-data。
+ */
 @ProvidesInterface(action = QSFactory.ACTION, version = QSFactory.VERSION)
-public class ZeroAospQsFactory implements QSFactory {
+public class ZeroAospQsFactory extends Service implements QSFactory {
     public static final String TAG = "DshQsTile";
 
     public ZeroAospQsFactory() {
         Log.i(TAG, "slot state=PLUGIN_LOADED cls=" + getClass().getName());
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        Log.i(TAG, "slot state=PLUGIN_LOADED onBind action=" + (intent == null ? "null" : intent.getAction()));
+        return null;
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        Log.i(TAG, "slot state=PLUGIN_LOADED onCreate");
     }
 
     @Override
@@ -159,9 +178,14 @@ cat > plugin-res/AndroidManifest.xml <<'XML'
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.zeroaosp.plugin">
+    <uses-permission android:name="com.android.systemui.permission.PLUGIN" />
     <application android:label="zeroaosp QS plugin">
-        <meta-data android:name="com.android.systemui.action.PLUGIN_QS_FACTORY"
-            android:value="com.zeroaosp.plugin.qs.ZeroAospQsFactory" />
+        <service android:name="com.zeroaosp.plugin.qs.ZeroAospQsFactory"
+                 android:exported="false">
+            <intent-filter>
+                <action android:name="com.android.systemui.action.PLUGIN_QS_FACTORY" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>
 XML
