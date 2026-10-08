@@ -125,10 +125,7 @@ grep -h 'createTile\|createTileView' base/packages/SystemUI/plugin/src/com/andro
 cat > plugin-src/com/zeroaosp/plugin/qs/ZeroAospQsFactory.java <<'JAVA'
 package com.zeroaosp.plugin.qs;
 
-import android.app.Service;
 import android.content.Context;
-import android.content.Intent;
-import android.os.IBinder;
 import android.util.Log;
 import com.android.systemui.plugins.annotations.ProvidesInterface;
 import com.android.systemui.plugins.qs.QSFactory;
@@ -136,28 +133,20 @@ import com.android.systemui.plugins.qs.QSTile;
 import com.android.systemui.plugins.qs.QSTileView;
 
 /**
- * zeroaosp M2 插件：QS 磁贴工厂（实现宿主既有契约，不改宿主一行）。
- * 必须 extends Service：宿主用 queryIntentServices(action) 发现插件（PluginActionManager:250-257），
- * 清单里对应 <service> + <intent-filter>，不是 meta-data。
+ * zeroaosp M2 插件：QS 磁贴工厂（宿主零改动）。
+ * 形状按 AOSP 权威契约：**普通 public 类 + 无参构造**
+ *   - PluginInstance.java:339  Class.forName(...)
+ *   - PluginInstance.java:300  return (T) cls.newInstance();
+ *   - 对照 plugin/ExamplePlugin/.../SampleOverlayPlugin.java:30
+ *     `public class SampleOverlayPlugin implements OverlayPlugin`
+ * 因此**不 extends Service**（T-025 的 Service 形状导致加载后崩）。
  */
 @ProvidesInterface(action = QSFactory.ACTION, version = QSFactory.VERSION)
-public class ZeroAospQsFactory extends Service implements QSFactory {
+public class ZeroAospQsFactory implements QSFactory {
     public static final String TAG = "DshQsTile";
 
     public ZeroAospQsFactory() {
         Log.i(TAG, "slot state=PLUGIN_LOADED cls=" + getClass().getName());
-    }
-
-    @Override
-    public IBinder onBind(Intent intent) {
-        Log.i(TAG, "slot state=PLUGIN_LOADED onBind action=" + (intent == null ? "null" : intent.getAction()));
-        return null;
-    }
-
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        Log.i(TAG, "slot state=PLUGIN_LOADED onCreate");
     }
 
     @Override
@@ -168,6 +157,7 @@ public class ZeroAospQsFactory extends Service implements QSFactory {
 
     @Override
     public QSTileView createTileView(Context context, QSTile tile, boolean collapsedView) {
+        Log.i(TAG, "slot state=PLUGIN_VIEW collapsed=" + collapsedView);
         return null;
     }
 
@@ -388,6 +378,16 @@ else
     "$ADB" shell dumpsys package com.zeroaosp.plugin | grep -iE 'signature|permission|granted|PLUGIN|signatures' | head -12 | tee "$ARTIFACT_DIR/pkg_platform_perm.txt"
   fi
   mark "STAGE6C_OK"
+  # T-026 ⑤ 可逆证明：卸载插件 → 重启 → 该位置应回到宿主默认
+  set +e
+  "$ADB" logcat -c >/dev/null 2>&1
+  "$ADB" uninstall com.zeroaosp.plugin 2>&1 | tee "$ARTIFACT_DIR/adb_uninstall_revert.txt"
+  "$ADB" reboot >/dev/null 2>&1; sleep 30; "$ADB" wait-for-device; wait_boot; sleep 25
+  collect reverted
+  "$ADB" logcat -d -v time | grep -iE 'DshQsTile|Disabling plugin' | head -5 > "$ARTIFACT_DIR/reverted_check.txt" 2>&1
+  info "可逆对照（卸载后）：DshQsTile 残留行数 = $(wc -l < "$ARTIFACT_DIR/reverted_check.txt" 2>/dev/null || echo 0)"
+  set -e
+  mark "STAGE6D_OK"
   mark "STAGE6B_OK"
 fi
 printf '\n--- stages.log ---\n'; cat "$ARTIFACT_DIR/stages.log" | sed 's/^/  /'
