@@ -414,6 +414,17 @@ else
   info "可逆对照（卸载后）：DshQsTile 残留行数 = $(wc -l < "$ARTIFACT_DIR/reverted_check.txt" 2>/dev/null || echo 0)"
   set -e
   mark "STAGE6D_OK"
+  set -e
+  # T-032 ① 第一刀回归断言（负向对照 = INJECT_FAILURE 那套：注入失败必须让 job 真红）
+  step "6e. 第一刀回归断言"
+  grep -q 'PLUGIN_FILLED' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：platform 采集里没有 PLUGIN_FILLED"
+  grep -q 'createTile spec=' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：createTile spec= 未出现"
+  grep -q 'PLUGIN_LOADED' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：PLUGIN_LOADED 未出现"
+  RESID="$(grep -c 'DshQsTile' "$ARTIFACT_DIR/reverted_check.txt" 2>/dev/null || echo 0)"
+  [ "$RESID" -eq 0 ] || fail "断言(b) 失败：卸载后仍有 $RESID 行 DshQsTile 残留"
+  printf 'ASSERT_1_PLUGIN_FILLED_AND_CREATETILE=OK\nASSERT_2_REVERTED_ZERO=OK\n' >> "$ARTIFACT_DIR/verdict.txt"
+  info "✅ 断言全过：PLUGIN_LOADED+PLUGIN_FILLED+createTile spec= ✓ ；卸载后可逆归零（残留 0 行）✓"
+  mark "STAGE6E_OK"
   mark "STAGE6B_OK"
 fi
 printf '\n--- stages.log ---\n'; cat "$ARTIFACT_DIR/stages.log" | sed 's/^/  /'
