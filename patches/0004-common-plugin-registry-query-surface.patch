@@ -1,0 +1,92 @@
+From 12aa7f79a298945fd9c552db84f0f17a0d086374 Mon Sep 17 00:00:00 2001
+From: eng-infra <eng-infra@zeroaosp.invalid>
+Date: Thu, 8 Oct 2026 18:55:26 +0800
+Subject: [PATCH] =?UTF-8?q?=E5=A2=9E=E5=8A=A0=E6=8F=92=E4=BB=B6=E6=B3=A8?=
+ =?UTF-8?q?=E5=86=8C=E8=A1=A8=E7=9A=84=E5=8F=AA=E8=AF=BB=E6=9F=A5=E8=AF=A2?=
+ =?UTF-8?q?=E9=9D=A2=EF=BC=9A=E5=90=A6=E5=88=99=E6=B3=A8=E5=86=8C=E8=A1=A8?=
+ =?UTF-8?q?=E5=8F=AA=E6=9C=89=20SettingsProvider=20=E5=86=85=E9=83=A8?=
+ =?UTF-8?q?=E5=8F=AF=E8=A7=81=EF=BC=8CM2=20=E7=9A=84=E8=A3=85=E9=85=8D?=
+ =?UTF-8?q?=E7=8A=B6=E6=80=81=E6=97=A0=E6=B3=95=E8=87=AA=E8=AF=81?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../java/com/android/server/SystemServer.java |  3 ++
+ .../server/ZeroAospPluginRegistryService.java | 53 +++++++++++++++++++
+ 2 files changed, 56 insertions(+)
+ create mode 100644 services/java/com/android/server/ZeroAospPluginRegistryService.java
+
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+index 1c02541..22a3a2c 100644
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -1254,6 +1254,9 @@ public final class SystemServer implements Dumpable {
+             Slog.w(TAG, "zeroaosp: plugin assembly failed, continuing boot", e);
+         }
+ 
++        // zeroaosp P-04：注册表只读查询面（dumpsys / service call 可读）
++        ZeroAospPluginRegistryService.start(mSystemContext);
++
+         mFirstBoot = mPackageManagerService.isFirstBoot();
+         mPackageManager = mSystemContext.getPackageManager();
+         t.traceEnd();
+diff --git a/services/java/com/android/server/ZeroAospPluginRegistryService.java b/services/java/com/android/server/ZeroAospPluginRegistryService.java
+new file mode 100644
+index 0000000..f81678f
+--- /dev/null
++++ b/services/java/com/android/server/ZeroAospPluginRegistryService.java
+@@ -0,0 +1,53 @@
++/*
++ * zeroaosp P-04 骨架：插件注册表的**只读查询面**。
++ * 为什么需要它：注册表写进 Settings 之后，只有 SettingsProvider 内部可见；
++ * 给 M2 的观测（G1/G4）一个能 `dumpsys` / `service call` 读到的稳定出口，
++ * 才能在 enforcing 的 userdebug 镜像上"自证"装配状态，而不是靠截图。
++ * 本类只读、不写、不持有状态（每次 dump 现读 Settings）。
++ */
++package com.android.server;
++
++import android.content.ContentResolver;
++import android.content.Context;
++import android.os.Binder;
++import android.provider.Settings;
++import android.util.Slog;
++
++/** @hide */
++public final class ZeroAospPluginRegistryService extends Binder {
++    private static final String TAG = "ZeroAospPluginRegistry";
++
++    /** service 名字：`adb shell service list | grep zeroaosp` 可查。 */
++    public static final String SERVICE_NAME = "zeroaosp_plugin_registry";
++
++    private final Context mContext;
++
++    public ZeroAospPluginRegistryService(Context context) {
++        mContext = context;
++        attachInterface(null, SERVICE_NAME);
++    }
++
++    /** 注册到 servicemanager。由 SystemServer 在 PMS 就绪后调用。 */
++    public static void start(Context systemContext) {
++        try {
++            android.os.ServiceManager.addService(SERVICE_NAME,
++                    new ZeroAospPluginRegistryService(systemContext));
++            Slog.i(TAG, "registry query surface registered as " + SERVICE_NAME);
++        } catch (Throwable e) {
++            Slog.w(TAG, "registry query surface registration failed", e);
++        }
++    }
++
++    @Override
++    protected void dump(java.io.FileDescriptor fd, java.io.PrintWriter pw, String[] args) {
++        ContentResolver cr = mContext.getContentResolver();
++        String registry = Settings.Global.getZeroAospPluginRegistry(cr);
++        pw.println("zeroaosp plugin registry (read-only surface)");
++        if (registry == null || registry.isEmpty()) {
++            pw.println("  entries=0 state=EMPTY");
++            return;
++        }
++        pw.println("  bytes=" + registry.length());
++        pw.println("  raw=" + registry);
++    }
++}

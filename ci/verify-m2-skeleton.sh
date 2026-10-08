@@ -36,7 +36,7 @@ step "2. 应用 patches/0002 与 0003（git am）"
 cd base
 git config core.autocrlf false
 : > "$ARTIFACT_DIR/am.log"
-for p in ../patches/000[23]-*.patch; do
+for p in ../patches/000[234]-*.patch; do
   [ -f "$p" ] || fail "找不到补丁 $p"
   echo "== git am $p" | tee -a "$ARTIFACT_DIR/am.log"
   if git -c user.name=ci -c user.email=ci@zeroaosp.invalid am "$p" >> "$ARTIFACT_DIR/am.log" 2>&1; then

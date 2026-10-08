@@ -45,7 +45,14 @@ info "build-tools=$BT"; info "android.jar=$AJ"
 mark "STAGE2_OK bt=$BT"
 
 step "3. 接口源码 → javac → jar（修复 (c)：0 个源文件必须红）"
-find base/packages/SystemUI/plugin/src -name '*.java' | sort > "$ARTIFACT_DIR/iface_sources.txt"
+# ① 收窄：只编「插件契约 + 注解 + qs 三个文件 + 隐藏 API 来源」
+# ② 补隐藏 API：android.annotation.*（@Nullable 等）来自 base/core/java，其源码一起编进 classpath
+{
+  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/Plugin.java
+  find base/packages/SystemUI/plugin/src/com/android/systemui/plugins/annotations -name '*.java'
+  find base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs -name '*.java'
+  find base/core/java/android/annotation -name '*.java'
+} | sort -u > "$ARTIFACT_DIR/iface_sources.txt"
 N="$(wc -l < "$ARTIFACT_DIR/iface_sources.txt")"
 info "接口源文件数 = $N"
 [ "$N" -gt 0 ] || fail "接口源文件数为 0（修复 (c)：此处必须红，不得级联）"
