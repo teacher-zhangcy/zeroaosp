@@ -178,8 +178,13 @@ fi
 [ -n "$SECILC" ] || { info "secilc 不可用 → L2 无法在本轮完成（见 apt.log）"; tail -5 "$ARTIFACT_DIR/apt.log" 2>/dev/null || true; write_status "L2_SKIPPED_NO_SECILC"; write_summary; info "总耗时 $(elapsed)s"; exit 1; }
 info "secilc = $SECILC"
 # (d) 编译新策略
+# (d) 编译新策略（policyvers 必须与设备内核一致，否则 load 会 EINVAL）
+POLICYVERS="$("$ADB" shell cat /sys/fs/selinux/policyvers 2>/dev/null | tr -d '\r' || true)"
+[ -n "$POLICYVERS" ] || POLICYVERS=30
+info "设备 /sys/fs/selinux/policyvers = $POLICYVERS"
 set -- $(ls policy/*.cil | grep -v 'mapping/')
-"$SECILC" "$@" -o "$ARTIFACT_DIR/policy.new" -c 30 -m -M true -G -N \
+info "secilc 输入顺序：$*"
+"$SECILC" "$@" -o "$ARTIFACT_DIR/policy.new" -c "$POLICYVERS" -m -M true -G -N \
   > "$ARTIFACT_DIR/secilc.log" 2>&1 || { info "secilc 失败原文："; tail -25 "$ARTIFACT_DIR/secilc.log" | sed 's/^/  /'; fail "secilc 编译新策略失败"; }
 info "secilc OK → $(stat -c%s "$ARTIFACT_DIR/policy.new") B"
 # (e) 放宽窗口：**只**用来装策略与给文件打标签（脚手架动作），
@@ -191,6 +196,14 @@ info "== 放宽窗口（仅装策略 + 打标签；这一段的动作不是交�
 "$ADB" shell 'cat /data/local/tmp/policy.new > /sys/fs/selinux/load' > "$ARTIFACT_DIR/load.log" 2>&1 \
   || info "（load 返回非零，见 load.log；enforcing 下写 selinuxfs 需要 load_policy 权限，故在窗口内做）"
 sed 's/^/  /' "$ARTIFACT_DIR/load.log" || true
+# 加载是否真的生效：把"当前已加载的策略"读回来，找我们的类型名
+"$ADB" shell 'cat /sys/fs/selinux/policy' > "$ARTIFACT_DIR/policy_loaded.bin" 2> "$ARTIFACT_DIR/policy_loaded.err" || true
+if grep -qa "dsh_quickjsd" "$ARTIFACT_DIR/policy_loaded.bin" 2>/dev/null; then
+  info "✅ 已加载策略里含 dsh_quickjsd（load 生效）"
+else
+  info "⚠ 已加载策略里没有 dsh_quickjsd（load 未生效；后续断言即使通过也只能证明 su 域路径）"
+  write_status "L2_LOAD_NOT_EFFECTIVE"
+fi
 "$ADB" shell "cp /data/local/tmp/${SERVICE_NAME}_l1 /data/local/tmp/${DOMAIN_NAME}" > "$ARTIFACT_DIR/cp.log" 2>&1 || fail "复制二进制失败（见 cp.log）"
 "$ADB" shell "chcon u:object_r:${DOMAIN_NAME}_exec:s0 /data/local/tmp/${DOMAIN_NAME}" 2> "$ARTIFACT_DIR/chcon.log" || info "（chcon 非零，见 chcon.log）"
 "$ADB" shell "ls -Z /data/local/tmp/${DOMAIN_NAME}" > "$ARTIFACT_DIR/chcon_result.txt" 2>&1 || true
@@ -214,8 +227,13 @@ info "--- L2 service check ---"; sed 's/^/  /' "$ARTIFACT_DIR/L2_service_check.t
 info "--- L2 avc denial（若有） ---"; grep -iE 'avc: *denied' "$ARTIFACT_DIR/L2_dmesg.txt" | head -20 | sed 's/^/  /' || info "（无）"
 grep -q "Service $SERVICE_NAME: found" "$ARTIFACT_DIR/L2_service_check.txt" \
   || fail "enforcing 下未正命中：$(cat "$ARTIFACT_DIR/L2_service_check.txt")"
-grep -qi "${DOMAIN_NAME}" "$ARTIFACT_DIR/L2_ps.txt" || fail "进程没有跑在 ${DOMAIN_NAME} 域（见 L2_ps.txt）"
-info "✅ enforcing 下注册成功，且进程运行在 ${DOMAIN_NAME} 域"
+# 关键：看的是 ps -Z 的**上下文列**（第一列），不是进程名列。
+# T-006 的 v3 与本次 L2 第一版都栽在"名字出现在输出里就算命中"这种假阳性上，这里显式收紧成三条独立检查。
+grep -qE "^u:r:${DOMAIN_NAME}:s0[[:space:]]" "$ARTIFACT_DIR/L2_ps.txt" \
+  || fail "进程上下文不是 u:r:${DOMAIN_NAME}:s0（L2_ps.txt 首行：$(head -1 "$ARTIFACT_DIR/L2_ps.txt")）"
+grep -qa "${DOMAIN_NAME}" "$ARTIFACT_DIR/policy_loaded.bin" 2>/dev/null \
+  || fail "已加载策略里没有 ${DOMAIN_NAME}（load 未生效，不能算 enforcing 下合法注册）"
+info "✅ enforcing 下注册成功，且进程上下文 = u:r:${DOMAIN_NAME}:s0（策略确已加载）"
 write_status "L2_ENFORCING_REGISTERED"
 write_summary
 printf '\n✅ 全部通过（%ss）\n' "$(elapsed)"
