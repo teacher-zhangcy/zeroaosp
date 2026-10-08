@@ -226,10 +226,10 @@ sha256sum "$ARTIFACT_DIR/zeroaosp-qs-plugin.apk" | tee "$ARTIFACT_DIR/apk.sha256
 mark "STAGE6_OK"
 printf 'VERDICT=BUILD_OK\n' >> "$ARTIFACT_DIR/verdict.txt"
 
-step "6b. 实机：装到 emulator → 重启 → logcat 正例/负例（有 APK 才跑）"
+step "6b. 实机仪器化：两时机 × 5 产物 + exported 变体（T-021）"
 APK="$ARTIFACT_DIR/zeroaosp-qs-plugin.apk"
 if [ ! -f "$APK" ]; then
-  info "APK 不存在 → 跳过实机（上一级已给原始报错）"; mark "STAGE6B_SKIPPED_NO_APK"
+  info "APK 不存在 → 跳过实机"; mark "STAGE6B_SKIPPED_NO_APK"
 else
   IMAGE="${IMAGE:-system-images;android-34;aosp_atd;x86_64}"
   sudo chmod 666 /dev/kvm || fail "KVM 权限失败"
@@ -239,25 +239,56 @@ else
   ( echo no | avdmanager create avd --force -n nag -k "$IMAGE" --device pixel_5 ) >/dev/null 2>&1 || true
   nohup "$EMU_BIN" -avd nag -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 3072 -cores 2 > "$ARTIFACT_DIR/emulator.log" 2>&1 &
   sleep 20; "$ADB" start-server >/dev/null 2>&1 || true; timeout 120 "$ADB" wait-for-device || true
-  BOOT=""; for i in $(seq 1 40); do BOOT="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"; [ "$BOOT" = "1" ] && break; sleep 10; done
-  [ "$BOOT" = "1" ] || fail "模拟器未启动完成"
+  wait_boot() { local b=""; for i in $(seq 1 45); do b="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"; [ "$b" = "1" ] && return 0; sleep 10; done; return 1; }
+  wait_boot || fail "模拟器未启动完成"
   "$ADB" shell getprop ro.build.type | tee "$ARTIFACT_DIR/build_type.txt"
-  # 负例：插件未装
+  # 每时机固定 5 个产物
+  collect() {
+    t="$1"
+    "$ADB" logcat -d -v time > "$ARTIFACT_DIR/logcat_full_$t.txt" 2>&1 || true
+    grep -iE "PluginManager|PluginActionManager|Found .*plugins|zeroaosp|DshQsTile" "$ARTIFACT_DIR/logcat_full_$t.txt" > "$ARTIFACT_DIR/logcat_filtered_$t.txt" 2>&1 || true
+    "$ADB" shell dumpsys package com.zeroaosp.plugin > "$ARTIFACT_DIR/dumpsys_package_$t.txt" 2>&1 || true
+    "$ADB" shell cmd package query-services -a com.android.systemui.action.PLUGIN_QS_FACTORY > "$ARTIFACT_DIR/query_services_$t.txt" 2>&1 \
+      || "$ADB" shell pm query-services -a com.android.systemui.action.PLUGIN_QS_FACTORY > "$ARTIFACT_DIR/query_services_$t.txt" 2>&1 || true
+    "$ADB" shell ps -A | grep -i systemui > "$ARTIFACT_DIR/ps_systemui_$t.txt" 2>&1 || true
+    info "[$t] 产物行数：full=$(wc -l < "$ARTIFACT_DIR/logcat_full_$t.txt") filtered=$(wc -l < "$ARTIFACT_DIR/logcat_filtered_$t.txt") query=$(wc -l < "$ARTIFACT_DIR/query_services_$t.txt") ps=$(wc -l < "$ARTIFACT_DIR/ps_systemui_$t.txt")"
+    info "[$t] query_services 原文："; head -5 "$ARTIFACT_DIR/query_services_$t.txt" | sed 's/^/    /'
+    info "[$t] DshQsTile 命中行："; grep -i 'DshQsTile' "$ARTIFACT_DIR/logcat_filtered_$t.txt" | head -5 | sed 's/^/    /' || true
+    info "[$t] PluginActionManager 命中行："; grep -i 'PluginActionManager\|Found .*plugins' "$ARTIFACT_DIR/logcat_filtered_$t.txt" | head -8 | sed 's/^/    /' || true
+  }
+  "$ADB" logcat -c >/dev/null 2>&1 || true; sleep 5
+  collect negative
+  # (a) 装 → 重启 → 采集
+  "$ADB" install -r -g "$APK" > "$ARTIFACT_DIR/adb_install_a.txt" 2>&1
+  cat "$ARTIFACT_DIR/adb_install_a.txt" | sed 's/^/    /'
+  "$ADB" reboot >/dev/null 2>&1 || true; sleep 30; "$ADB" wait-for-device || true; wait_boot || true; sleep 25
+  collect a
+  # (b) 覆盖安装（触发 PACKAGE_REPLACED，不重启）→ 采集
   "$ADB" logcat -c >/dev/null 2>&1 || true
-  sleep 5
-  "$ADB" logcat -d -s DshQsTile:* > "$ARTIFACT_DIR/logcat_negative.txt" 2>&1 || true
-  info "负例 logcat 行数 = $(wc -l < "$ARTIFACT_DIR/logcat_negative.txt")"
-  # 安装插件
-  "$ADB" install -r -g "$APK" | tee "$ARTIFACT_DIR/adb_install.txt"
-  "$ADB" shell pm path com.zeroaosp.plugin | tee "$ARTIFACT_DIR/pm_path.txt" || true
-  # 重启 → 正例
-  "$ADB" reboot >/dev/null 2>&1 || true; sleep 25; "$ADB" wait-for-device || true
-  for i in $(seq 1 40); do BOOT="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"; [ "$BOOT" = "1" ] && break; sleep 10; done
-  sleep 25
-  "$ADB" logcat -d -s DshQsTile:* > "$ARTIFACT_DIR/logcat_positive.txt" 2>&1 || true
-  info "正例 logcat 行数 = $(wc -l < "$ARTIFACT_DIR/logcat_positive.txt")"
-  head -10 "$ARTIFACT_DIR/logcat_positive.txt" | sed 's/^/    /'
-  "$ADB" logcat -d | grep -i -m8 'zeroaosp\|PluginManager' > "$ARTIFACT_DIR/logcat_pluginmgr.txt" 2>&1 || true
+  "$ADB" install -r -g "$APK" > "$ARTIFACT_DIR/adb_install_b.txt" 2>&1
+  cat "$ARTIFACT_DIR/adb_install_b.txt" | sed 's/^/    /'
+  "$ADB" shell am broadcast -a android.intent.action.PACKAGE_ADDED -d package:com.zeroaosp.plugin > "$ARTIFACT_DIR/trigger_b.txt" 2>&1 || true
+  "$ADB" shell cmd package compile -f -m speed com.zeroaosp.plugin >> "$ARTIFACT_DIR/trigger_b.txt" 2>&1 || true
+  sleep 30
+  collect b
+  # exported=true 变体：同 run 内现场重打一个 APK 并覆盖安装对照
+  sed 's/android:exported="false"/android:exported="true"/' plugin-res/AndroidManifest.xml > plugin-res/AndroidManifest.exp.xml
+  "$SDK/build-tools/$BT/aapt2" link -o out-apk/unsigned-exp.apk --manifest plugin-res/AndroidManifest.exp.xml \
+    --min-sdk-version 26 --target-sdk-version 34 -I "$AJ" > "$ARTIFACT_DIR/aapt2_exp.log" 2>&1 \
+    && ( cd out-dex && zip -q -j ../out-apk/unsigned-exp.apk classes.dex ) \
+    && "$SDK/build-tools/$BT/zipalign" -f 4 out-apk/unsigned-exp.apk out-apk/aligned-exp.apk > /dev/null 2>&1 \
+    && "$SDK/build-tools/$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android \
+         --out "$ARTIFACT_DIR/zeroaosp-qs-plugin-exp.apk" out-apk/aligned-exp.apk > "$ARTIFACT_DIR/apksigner_exp.log" 2>&1 \
+    || info "（exported 变体打包失败，见 aapt2_exp.log）"
+  if [ -f "$ARTIFACT_DIR/zeroaosp-qs-plugin-exp.apk" ]; then
+    "$ADB" logcat -c >/dev/null 2>&1 || true
+    "$ADB" install -r -g "$ARTIFACT_DIR/zeroaosp-qs-plugin-exp.apk" > "$ARTIFACT_DIR/adb_install_exp.txt" 2>&1
+    cat "$ARTIFACT_DIR/adb_install_exp.txt" | sed 's/^/    /'
+    "$ADB" shell am broadcast -a android.intent.action.PACKAGE_REPLACED -d package:com.zeroaosp.plugin >> "$ARTIFACT_DIR/trigger_b.txt" 2>&1 || true
+    sleep 30
+    collect exp
+    sha256sum "$ARTIFACT_DIR/zeroaosp-qs-plugin-exp.apk" | tee "$ARTIFACT_DIR/apk_exp.sha256"
+  fi
   "$ADB" exec-out screencap -p > "$ARTIFACT_DIR/screen.png" 2>/dev/null || true
   info "截图 → $ARTIFACT_DIR/screen.png（**辅助、M1 未落证通道**）"
   mark "STAGE6B_OK"
