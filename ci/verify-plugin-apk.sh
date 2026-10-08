@@ -151,7 +151,7 @@ public class ZeroAospQsFactory implements QSFactory {
 
     @Override
     public QSTile createTile(String tileSpec) {
-        Log.i(TAG, "slot state=PLUGIN_FILLED tileSpec=" + tileSpec);
+        Log.i(TAG, "createTile spec=" + tileSpec + " slot state=PLUGIN_FILLED");
         return null;
     }
 
@@ -187,6 +187,10 @@ javac -nowarn -d out-classes -cp "$AJ:$ARTIFACT_DIR/systemui-plugin-interfaces.j
   || { grep 'error:' "$ARTIFACT_DIR/javac_impl.log" | head -10 | sed 's/^/    /'; fail "实现 javac 失败（原始错误见 javac_impl.log）"; }
 info "实现 javac OK"
 find out-classes -name '*.class' > "$ARTIFACT_DIR/impl_classes.txt"
+# T-028：插件必须**自带**它依赖的插件接口类 —— 否则宿主 checkVersion 抛
+#   VersionInfo$InvalidVersionException: Missing required dependency QSTile$Icon（T-027 完整栈）
+find out-iface -name '*.class' >> "$ARTIFACT_DIR/impl_classes.txt"
+info "dex 输入 class 数 = $(wc -l < "$ARTIFACT_DIR/impl_classes.txt")（out-classes + out-iface 合并）"
 "$SDK/build-tools/$BT/d8" --min-api 26 --output out-dex @"$ARTIFACT_DIR/impl_classes.txt" > "$ARTIFACT_DIR/d8.log" 2>&1 \
   || { tail -8 "$ARTIFACT_DIR/d8.log" | sed 's/^/    /'; fail "d8 失败（原始输出见 d8.log）"; }
 info "d8 OK：classes.dex $(stat -c%s out-dex/classes.dex) B"
