@@ -2,6 +2,12 @@ name: verify-plugin
 
 on:
   workflow_dispatch:
+    inputs:
+      inject_failure:
+        description: '1 = 故意让阶段 0 失败（对照 run：证明断言真会红）'
+        required: false
+        default: '0'
+        type: string
   push:
     paths:
       - 'ci/verify-plugin-apk.sh'
@@ -12,17 +18,18 @@ permissions:
 
 jobs:
   plugin-apk:
-    name: 插件 APK 编译可行性（免全树）
+    name: 插件 APK 编译（免全树）
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
       SDK: /usr/local/lib/android/sdk
       ARTIFACT_DIR: artifacts-plugin
+      INJECT_FAILURE: ${{ inputs.inject_failure || '0' }}
     steps:
       - uses: actions/checkout@v4
-      - name: 跑插件编译实验（ci/verify-plugin-apk.sh）
+      - name: 跑插件编译链（ci/verify-plugin-apk.sh）
         run: bash ci/verify-plugin-apk.sh
-      - name: 上传产物（APK / 各阶段日志 / 清单）
+      - name: 上传产物（APK / 各阶段日志 / sha256）
         if: always()
         uses: actions/upload-artifact@v4
         with:
