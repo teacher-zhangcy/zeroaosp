@@ -291,6 +291,24 @@ else
   fi
   "$ADB" exec-out screencap -p > "$ARTIFACT_DIR/screen.png" 2>/dev/null || true
   info "截图 → $ARTIFACT_DIR/screen.png（**辅助、M1 未落证通道**）"
+  # T-022 探针：宿主为什么没发起插件查询 —— PluginEnabler 状态 + SystemUI 进程级日志
+  "$ADB" shell settings list secure | grep -i 'plugin' > "$ARTIFACT_DIR/probe_plugin_enabler.txt" 2>&1 || true
+  "$ADB" shell settings list secure > "$ARTIFACT_DIR/probe_secure_all.txt" 2>&1 || true
+  SPID="$("$ADB" shell pidof com.android.systemui 2>/dev/null | tr -d '\r' | awk '{print $1}')"
+  info "SystemUI pid = $SPID"
+  "$ADB" shell logcat -d -v time > "$ARTIFACT_DIR/probe_logcat_all.txt" 2>&1 || true
+  if [ -n "$SPID" ]; then
+    grep -E "\( *$SPID\)" "$ARTIFACT_DIR/probe_logcat_all.txt" > "$ARTIFACT_DIR/probe_systemui_log.txt" 2>&1 || true
+  else
+    grep -iE 'systemui' "$ARTIFACT_DIR/probe_logcat_all.txt" > "$ARTIFACT_DIR/probe_systemui_log.txt" 2>&1 || true
+  fi
+  grep -i 'plugin' "$ARTIFACT_DIR/probe_logcat_all.txt" > "$ARTIFACT_DIR/probe_plugin_all.txt" 2>&1 || true
+  "$ADB" shell dumpsys package com.zeroaosp.plugin | grep -iE 'enabled|stopped|hidden|permission|stopped=' > "$ARTIFACT_DIR/probe_pkg_state.txt" 2>&1 || true
+  "$ADB" shell cmd package resolve-service -a com.android.systemui.action.PLUGIN_QS_FACTORY --brief > "$ARTIFACT_DIR/probe_resolve.txt" 2>&1 || true
+  info "探针行数：enabler=$(wc -l < "$ARTIFACT_DIR/probe_plugin_enabler.txt") systemui_log=$(wc -l < "$ARTIFACT_DIR/probe_systemui_log.txt") plugin_all=$(wc -l < "$ARTIFACT_DIR/probe_plugin_all.txt") resolve=$(wc -l < "$ARTIFACT_DIR/probe_resolve.txt")"
+  info "探针：plugin enabler 条目 →"; head -5 "$ARTIFACT_DIR/probe_plugin_enabler.txt" | sed 's/^/    /' || true
+  info "探针：resolve-service 原文 →"; head -5 "$ARTIFACT_DIR/probe_resolve.txt" | sed 's/^/    /' || true
+  info "探针：SystemUI 日志里的插件相关行 →"; grep -im8 -E 'QSTileHost|PluginActionManager|PluginManager|PluginEnabler|addPluginListener|Found .*plugins' "$ARTIFACT_DIR/probe_systemui_log.txt" | sed 's/^/    /' || true
   mark "STAGE6B_OK"
 fi
 printf '\n--- stages.log ---\n'; cat "$ARTIFACT_DIR/stages.log" | sed 's/^/  /'
