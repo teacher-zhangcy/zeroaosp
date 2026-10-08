@@ -33,6 +33,9 @@ info() { printf '  %s\n' "$*"; }
 elapsed() { echo "$(( $(date +%s) - T0 ))"; }
 fail() { printf '\n!!!!! 断言失败: %s\n' "$*" >&2; exit 1; }
 
+# 非预期退出（set -e 触发）也要留痕——否则只留一个静默 exit 1
+trap 'printf "\n!! 脚本在第 %s 行非预期退出（exit=%s）\n" "$LINENO" "$?" >&2' ERR
+
 write_status() { printf '%s\n' "$1" > "$ARTIFACT_DIR/status.txt"; info "status = $1"; }
 
 write_summary() {
@@ -85,16 +88,22 @@ sleep 4; "$ADB" wait-for-device || true
 step "L0 事实层：enforcing 状态与 selinux 资产"
 "$ADB" shell getenforce | tee "$ARTIFACT_DIR/getenforce.txt"
 "$ADB" shell 'cat /sys/fs/selinux/enforce' | tee "$ARTIFACT_DIR/enforce_value.txt"
-"$ADB" shell 'ls -l /system/etc/selinux/' > "$ARTIFACT_DIR/selinux_etc.txt" 2>&1
-"$ADB" shell 'ls -l /system/etc/selinux/mapping/' >> "$ARTIFACT_DIR/selinux_etc.txt" 2>&1
-"$ADB" shell 'ls -l /vendor/etc/selinux/ /system_ext/etc/selinux/ /product/etc/selinux/' >> "$ARTIFACT_DIR/selinux_etc.txt" 2>&1
-"$ADB" shell 'cat /proc/self/attr/current' | tee "$ARTIFACT_DIR/shell_context.txt"
-"$ADB" shell 'ls /system/bin | grep -iE "^(chcon|restorecon|getenforce|setenforce|secilc|checkpolicy)$"' > "$ARTIFACT_DIR/selinux_bins.txt" 2>&1 || true
+# 以下全部是**诊断性**采集：任何一条失败都不应该让脚本退出（断言在 L2 才做）
+"$ADB" shell 'ls -l /system/etc/selinux/' > "$ARTIFACT_DIR/selinux_etc.txt" 2>&1 || true
+"$ADB" shell 'ls -l /system/etc/selinux/mapping/' >> "$ARTIFACT_DIR/selinux_etc.txt" 2>&1 || true
+"$ADB" shell 'ls -l /vendor/etc/selinux/ /system_ext/etc/selinux/ /product/etc/selinux/' >> "$ARTIFACT_DIR/selinux_etc.txt" 2>&1 || true
+"$ADB" shell 'cat /proc/self/attr/current' > "$ARTIFACT_DIR/shell_context.txt" 2>&1 || true
+"$ADB" shell 'ls /system/bin' > "$ARTIFACT_DIR/system_bin.txt" 2>&1 || true
+grep -iE '^(chcon|restorecon|getenforce|setenforce|secilc|checkpolicy)$' "$ARTIFACT_DIR/system_bin.txt" > "$ARTIFACT_DIR/selinux_bins.txt" 2>&1 || true
 sed 's/^/  /' "$ARTIFACT_DIR/selinux_etc.txt" | head -30
+info "--- shell 域 / 设备侧工具 ---"
+cat "$ARTIFACT_DIR/shell_context.txt" | sed 's/^/  /' || true
+cat "$ARTIFACT_DIR/selinux_bins.txt" | sed 's/^/  /' || true
 info "--- 运行器上的 selinux 工具 ---"
-( command -v secilc || echo "secilc: 缺失" ) | tee "$ARTIFACT_DIR/tools_host.txt"
-( command -v checkpolicy || echo "checkpolicy: 缺失" ) | tee -a "$ARTIFACT_DIR/tools_host.txt"
-apt-cache policy secilc checkpolicy 2>/dev/null | tee -a "$ARTIFACT_DIR/tools_host.txt" || true
+( command -v secilc || echo "secilc: 缺失" ) > "$ARTIFACT_DIR/tools_host.txt" 2>&1 || true
+( command -v checkpolicy || echo "checkpolicy: 缺失" ) >> "$ARTIFACT_DIR/tools_host.txt" 2>&1 || true
+apt-cache policy secilc checkpolicy >> "$ARTIFACT_DIR/tools_host.txt" 2>&1 || true
+sed 's/^/  /' "$ARTIFACT_DIR/tools_host.txt"
 
 step "L0b 编译服务（T-007 路径1：链接设备 .so）"
 NDK="$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
@@ -162,33 +171,40 @@ set -- $(ls policy/*.cil | grep -v 'mapping/')
 "$SECILC" "$@" -o "$ARTIFACT_DIR/policy.new" -c 30 -m -M true -G -N \
   > "$ARTIFACT_DIR/secilc.log" 2>&1 || { info "secilc 失败原文："; tail -25 "$ARTIFACT_DIR/secilc.log" | sed 's/^/  /'; fail "secilc 编译新策略失败"; }
 info "secilc OK → $(stat -c%s "$ARTIFACT_DIR/policy.new") B"
-# (e) 加载（注意：**加载动作**需要在放宽模式下完成；加载完成后立刻回到 enforcing，测试在 enforcing 下进行）
+# (e) 放宽窗口：**只**用来装策略与给文件打标签（脚手架动作），
+#     窗口内不做任何"注册成功与否"的判断；随后立刻回到 enforcing，断言全部发生在 enforcing=1 之后
+info "== 放宽窗口（仅装策略 + 打标签；这一段的动作不是交付形态）=="
 "$ADB" shell 'setenforce 0' >/dev/null 2>&1 || true
+"$ADB" shell getenforce | tee "$ARTIFACT_DIR/getenforce_window.txt"
 "$ADB" push "$ARTIFACT_DIR/policy.new" /data/local/tmp/policy.new > /dev/null 2>&1 || fail "推策略失败"
-"$ADB" shell 'cat /data/local/tmp/policy.new > /sys/fs/selinux/load' > "$ARTIFACT_DIR/load.log" 2>&1 || info "（load 返回非零，见 load.log）"
-cat "$ARTIFACT_DIR/load.log" | sed 's/^/  /'
+"$ADB" shell 'cat /data/local/tmp/policy.new > /sys/fs/selinux/load' > "$ARTIFACT_DIR/load.log" 2>&1 \
+  || info "（load 返回非零，见 load.log；enforcing 下写 selinuxfs 需要 load_policy 权限，故在窗口内做）"
+sed 's/^/  /' "$ARTIFACT_DIR/load.log" || true
+"$ADB" shell "cp /data/local/tmp/${SERVICE_NAME}_l1 /data/local/tmp/${DOMAIN_NAME}" > "$ARTIFACT_DIR/cp.log" 2>&1 || fail "复制二进制失败（见 cp.log）"
+"$ADB" shell "chcon u:object_r:${DOMAIN_NAME}_exec:s0 /data/local/tmp/${DOMAIN_NAME}" 2> "$ARTIFACT_DIR/chcon.log" || info "（chcon 非零，见 chcon.log）"
+"$ADB" shell "ls -Z /data/local/tmp/${DOMAIN_NAME}" > "$ARTIFACT_DIR/chcon_result.txt" 2>&1 || true
+sed 's/^/  /' "$ARTIFACT_DIR/chcon_result.txt" || true
+info "== 关窗：回到 enforcing =="
 "$ADB" shell 'setenforce 1' >/dev/null 2>&1 || true
 "$ADB" shell getenforce | tee "$ARTIFACT_DIR/getenforce_after_load.txt"
-# (f) 让进程进入我们的域（验证脚手架：chcon 打标签 + type_transition 已在 CIL 里声明）
-"$ADB" shell "cp /data/local/tmp/${SERVICE_NAME}_l1 /data/local/tmp/${DOMAIN_NAME}" || fail "复制二进制失败"
-"$ADB" shell "chcon u:object_r:${DOMAIN_NAME}_exec:s0 /data/local/tmp/${DOMAIN_NAME}" 2> "$ARTIFACT_DIR/chcon.log" || info "（chcon 非零，见 chcon.log）"
-"$ADB" shell "ls -Z /data/local/tmp/${DOMAIN_NAME}" | tee "$ARTIFACT_DIR/chcon_result.txt"
-# (g) 断言：enforcing 下注册
+# (g) 断言：**enforcing 下**注册（先复核 enforcing，再跑进程）
+grep -qx "Enforcing" "$ARTIFACT_DIR/getenforce_after_load.txt" || fail "getenforce ≠ Enforcing（断言前必须回到 enforcing）"
 "$ADB" shell "setsid /data/local/tmp/${DOMAIN_NAME} > /data/local/tmp/l2.log 2>&1 < /dev/null &" || true
 sleep 8
 "$ADB" shell "cat /data/local/tmp/l2.log" > "$ARTIFACT_DIR/L2_self_log.txt" 2>&1 || true
-"$ADB" shell "ps -A -Z" | grep -i "${DOMAIN_NAME}" > "$ARTIFACT_DIR/L2_ps.txt" 2>&1 || true
+"$ADB" shell "ps -A -Z" > "$ARTIFACT_DIR/L2_ps.txt" 2>&1 || true
 "$ADB" shell "service check $SERVICE_NAME" > "$ARTIFACT_DIR/L2_service_check.txt" 2>&1 || true
 "$ADB" shell "dumpsys $SERVICE_NAME" > "$ARTIFACT_DIR/L2_dumpsys.txt" 2>&1 || true
 "$ADB" shell 'dmesg' > "$ARTIFACT_DIR/L2_dmesg.txt" 2>&1 || true
-info "--- L2 进程上下文 ---"; sed 's/^/  /' "$ARTIFACT_DIR/L2_ps.txt"
+"$ADB" shell getenforce | tee "$ARTIFACT_DIR/getenforce_at_assert.txt"
+info "--- L2 进程上下文（ps -Z 里含 dsh_quickjsd 的行） ---"; grep -i "${DOMAIN_NAME}" "$ARTIFACT_DIR/L2_ps.txt" | sed 's/^/  /' || info "（没有该域的行）"
 info "--- L2 自身日志 ---"; sed 's/^/  /' "$ARTIFACT_DIR/L2_self_log.txt"
 info "--- L2 service check ---"; sed 's/^/  /' "$ARTIFACT_DIR/L2_service_check.txt"
 info "--- L2 avc denial（若有） ---"; grep -iE 'avc: *denied' "$ARTIFACT_DIR/L2_dmesg.txt" | head -20 | sed 's/^/  /' || info "（无）"
-grep -qx "Enforcing" "$ARTIFACT_DIR/getenforce_after_load.txt" || fail "getenforce ≠ Enforcing（测试前必须回到 enforcing）"
 grep -q "Service $SERVICE_NAME: found" "$ARTIFACT_DIR/L2_service_check.txt" \
   || fail "enforcing 下未正命中：$(cat "$ARTIFACT_DIR/L2_service_check.txt")"
 grep -qi "${DOMAIN_NAME}" "$ARTIFACT_DIR/L2_ps.txt" || fail "进程没有跑在 ${DOMAIN_NAME} 域（见 L2_ps.txt）"
 info "✅ enforcing 下注册成功，且进程运行在 ${DOMAIN_NAME} 域"
+write_status "L2_ENFORCING_REGISTERED"
 write_summary
 printf '\n✅ 全部通过（%ss）\n' "$(elapsed)"
