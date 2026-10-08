@@ -1,0 +1,32 @@
+name: verify-plugin
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ci/verify-plugin-apk.sh'
+      - '.github/workflows/verify-plugin.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-apk:
+    name: 插件 APK 编译可行性（免全树）
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      SDK: /usr/local/lib/android/sdk
+      ARTIFACT_DIR: artifacts-plugin
+    steps:
+      - uses: actions/checkout@v4
+      - name: 跑插件编译实验（ci/verify-plugin-apk.sh）
+        run: bash ci/verify-plugin-apk.sh
+      - name: 上传产物（APK / 各阶段日志 / 清单）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-apk-artifacts
+          path: artifacts-plugin/
+          retention-days: 14
+          if-no-files-found: warn
