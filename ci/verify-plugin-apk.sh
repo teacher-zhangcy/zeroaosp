@@ -332,6 +332,48 @@ else
   info "探针 secure-settings 里的 plugin 条目："; head -8 "$ARTIFACT_DIR/probe_plugin_enabler.txt" | sed 's/^/    /'
   info "探针 resolve-service："; head -5 "$ARTIFACT_DIR/probe_resolve.txt" | sed 's/^/    /'
   info "探针 SystemUI 日志里的插件相关行："; grep -im10 -E 'QSTileHost|PluginActionManager|PluginManager|PluginEnabler|addPluginListener|Found .*plugins|PluginInstance' "$ARTIFACT_DIR/probe_systemui_log.txt" | sed 's/^/    /'
+  # T-023：平台签名豁免实验（AOSP **公开测试密钥**，CI 现场从公开源取，不入仓、不进回报正文）
+  set +e
+  mkdir -p pk
+  GITSRC="https://android.googlesource.com/platform/build/+/refs/tags/android-14.0.0_r1/target/product/security"
+  RAW="https://raw.githubusercontent.com/aosp-mirror/platform_build/android-14.0.0_r1/target/product/security"
+  for f in platform.pk8 platform.x509.pem; do
+    if curl -sSL -m 60 "$GITSRC/$f?format=TEXT" | base64 -d > "pk/$f" 2>>"$ARTIFACT_DIR/pk_fetch.log" && [ -s "pk/$f" ]; then
+      info "取到 $f（googlesource）"
+    else
+      curl -sSL -m 60 "$RAW/$f" -o "pk/$f" 2>>"$ARTIFACT_DIR/pk_fetch.log" && info "取到 $f（aosp-mirror raw）" || info "取 $f 失败"
+    fi
+  done
+  ls -l pk | sed 's/^/    /'
+  openssl pkcs8 -inform DER -nocrypt -in pk/platform.pk8 -out pk/platform.pem 2>>"$ARTIFACT_DIR/pk_fetch.log"
+  openssl pkcs12 -export -in pk/platform.x509.pem -inkey pk/platform.pem -out pk/platform.p12 -name platform -passout pass:android 2>>"$ARTIFACT_DIR/pk_fetch.log"
+  set -e
+  if [ -s pk/platform.p12 ]; then
+    sha256sum pk/platform.p12 | tee "$ARTIFACT_DIR/p12.sha256"
+    "$SDK/build-tools/$BT/apksigner" sign --ks pk/platform.p12 --ks-pass pass:android --ks-key-alias platform \
+      --out "$ARTIFACT_DIR/zeroaosp-qs-plugin-platform.apk" out-apk/aligned.apk > "$ARTIFACT_DIR/apksigner_platform.log" 2>&1 \
+      || info "（平台签名失败，见 apksigner_platform.log）"
+    if [ -f "$ARTIFACT_DIR/zeroaosp-qs-plugin-platform.apk" ]; then
+      sha256sum "$ARTIFACT_DIR/zeroaosp-qs-plugin-platform.apk" | tee "$ARTIFACT_DIR/apk_platform.sha256"
+      "$SDK/build-tools/$BT/apksigner" verify --print-certs "$ARTIFACT_DIR/zeroaosp-qs-plugin-platform.apk" 2>&1 | tee "$ARTIFACT_DIR/apk_platform_certs.txt"
+    fi
+  else
+    info "（p12 未生成，见 pk_fetch.log）"
+  fi
+  # 分水岭判据：设备侧 SystemUI 的签名指纹
+  "$ADB" shell dumpsys package com.android.systemui > "$ARTIFACT_DIR/systemui_dumpsys.txt" 2>&1
+  grep -iE 'signatures|signature|versionName|flags' "$ARTIFACT_DIR/systemui_dumpsys.txt" | head -12 | tee "$ARTIFACT_DIR/systemui_certs.txt"
+  # 装平台签名插件 → 重启 → 采集
+  if [ -f "$ARTIFACT_DIR/zeroaosp-qs-plugin-platform.apk" ]; then
+    "$ADB" logcat -c >/dev/null 2>&1 || true
+    "$ADB" install -r -g "$ARTIFACT_DIR/zeroaosp-qs-plugin-platform.apk" 2>&1 | tee "$ARTIFACT_DIR/adb_install_platform.txt"
+    "$ADB" reboot >/dev/null 2>&1 || true; sleep 30; "$ADB" wait-for-device || true; wait_boot || true; sleep 25
+    collect platform
+    info "platform 采集：PluginActionManager 行 →"; grep -i 'PluginActionManager' "$ARTIFACT_DIR/logcat_filtered_platform.txt" | head -8 | sed 's/^/    /'
+    info "platform 采集：DshQsTile 行 →"; grep -i 'DshQsTile' "$ARTIFACT_DIR/logcat_filtered_platform.txt" | head -8 | sed 's/^/    /'
+    "$ADB" shell dumpsys package com.zeroaosp.plugin | grep -iE 'signature|permission|granted|PLUGIN|signatures' | head -12 | tee "$ARTIFACT_DIR/pkg_platform_perm.txt"
+  fi
+  mark "STAGE6C_OK"
   mark "STAGE6B_OK"
 fi
 printf '\n--- stages.log ---\n'; cat "$ARTIFACT_DIR/stages.log" | sed 's/^/  /'
