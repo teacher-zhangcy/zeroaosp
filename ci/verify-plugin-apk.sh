@@ -362,10 +362,24 @@ else
   fi
   # 分水岭判据：设备侧 SystemUI 的签名指纹
   "$ADB" shell dumpsys package com.android.systemui > "$ARTIFACT_DIR/systemui_dumpsys.txt" 2>&1
-  grep -iE 'signatures|signature|versionName|flags' "$ARTIFACT_DIR/systemui_dumpsys.txt" | head -12 | tee "$ARTIFACT_DIR/systemui_certs.txt"
+  grep -iE 'signatures=|signingCertificate|Signing Certificate|SHA-256|digest|apkSigningVersion' "$ARTIFACT_DIR/systemui_dumpsys.txt" | head -12 | tee "$ARTIFACT_DIR/systemui_certs_dumpsys.txt"
+  # T-024 稳妥取法：pull SystemUI.apk 后 apksigner verify --print-certs（不再用过宽 grep 当证书证据）
+  SUIPATH="$("$ADB" shell pm path com.android.systemui 2>/dev/null | tr -d '\r' | sed 's/^package://' | head -1)"
+  info "SystemUI apk 路径 = '$SUIPATH'"
+  if [ -n "$SUIPATH" ]; then
+    "$ADB" pull "$SUIPATH" "$ARTIFACT_DIR/SystemUI.apk" > "$ARTIFACT_DIR/pull_systemui.log" 2>&1 || info "（pull 失败，见 pull_systemui.log）"
+  fi
+  if [ -f "$ARTIFACT_DIR/SystemUI.apk" ]; then
+    sha256sum "$ARTIFACT_DIR/SystemUI.apk" | tee "$ARTIFACT_DIR/systemui_apk.sha256"
+    "$SDK/build-tools/$BT/apksigner" verify --print-certs "$ARTIFACT_DIR/SystemUI.apk" 2>&1 | tee "$ARTIFACT_DIR/systemui_certs.txt"
+  else
+    info "（SystemUI.apk 未拉到 → 证书指纹只能靠 dumpsys 段，见 systemui_certs_dumpsys.txt）"
+  fi
   # 装平台签名插件 → 重启 → 采集
   if [ -f "$ARTIFACT_DIR/zeroaosp-qs-plugin-platform.apk" ]; then
     "$ADB" logcat -c >/dev/null 2>&1 || true
+    # T-024：先卸载 debug 签名版，否则 INSTALL_FAILED_UPDATE_INCOMPATIBLE
+    "$ADB" uninstall com.zeroaosp.plugin 2>&1 | tee "$ARTIFACT_DIR/adb_uninstall_before_platform.txt"
     "$ADB" install -r -g "$ARTIFACT_DIR/zeroaosp-qs-plugin-platform.apk" 2>&1 | tee "$ARTIFACT_DIR/adb_install_platform.txt"
     "$ADB" reboot >/dev/null 2>&1 || true; sleep 30; "$ADB" wait-for-device || true; wait_boot || true; sleep 25
     collect platform
