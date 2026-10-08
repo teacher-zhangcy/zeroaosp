@@ -45,23 +45,57 @@ info "build-tools=$BT"; info "android.jar=$AJ"
 mark "STAGE2_OK bt=$BT"
 
 step "3. 接口源码 → javac → jar（修复 (c)：0 个源文件必须红）"
-# ① 源文件清单（**本地核对过**：annotations 与 Plugin.java 都在 plugin_core，不在 plugin/src）
+# ① 源文件清单（只留实现真正需要的契约；**(c) 去掉 QS.java**——它多带依赖，我们只用 QSFactory/QSTile/QSTileView/QSIconView）
 {
   echo base/packages/SystemUI/plugin_core/src/com/android/systemui/plugins/Plugin.java
   find base/packages/SystemUI/plugin_core/src/com/android/systemui/plugins/annotations -name '*.java'
-  find base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs -name '*.java'
+  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSFactory.java
+  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSTile.java
+  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSTileView.java
+  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSIconView.java
   echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/FragmentBase.java
-  find base/core/java/android/annotation -name '*.java'
 } > "$ARTIFACT_DIR/iface_sources.txt"
-# ② 编译期桩：androidx 注解与 framework 内部类（只为过 javac；运行期用设备上的真类）
-mkdir -p stubs/androidx/annotation stubs/com/android/internal/logging
+# ② 编译期桩（**(a)(b)**：全部 public；只为过 javac —— 运行期仍解析到设备上的真类）
+mkdir -p stubs/android/annotation stubs/android/metrics stubs/androidx/annotation stubs/com/android/internal/logging
+cat > stubs/android/annotation/NonNull.java <<'JAVA'
+package android.annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+@Retention(RetentionPolicy.CLASS)
+@Target({ElementType.METHOD, ElementType.PARAMETER, ElementType.FIELD, ElementType.LOCAL_VARIABLE})
+public @interface NonNull {}
+JAVA
+cat > stubs/android/annotation/Nullable.java <<'JAVA'
+package android.annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+@Retention(RetentionPolicy.CLASS)
+@Target({ElementType.METHOD, ElementType.PARAMETER, ElementType.FIELD, ElementType.LOCAL_VARIABLE})
+public @interface Nullable {}
+JAVA
+cat > stubs/android/metrics/LogMaker.java <<'JAVA'
+package android.metrics;
+/** 编译期桩：QSTile 只在签名/常量里用到它。 */
+public final class LogMaker {
+    public LogMaker(int category) {}
+    public LogMaker setSubtype(int subtype) { return this; }
+    public LogMaker addTaggedData(int tag, Object value) { return this; }
+}
+JAVA
 cat > stubs/androidx/annotation/Nullable.java <<'JAVA'
 package androidx.annotation;
 public @interface Nullable {}
 JAVA
 cat > stubs/androidx/annotation/FloatRange.java <<'JAVA'
 package androidx.annotation;
-public @interface FloatRange { double from() default -Double.MAX_VALUE; double to() default Double.MAX_VALUE; }
+public @interface FloatRange {
+    double from() default -Double.MAX_VALUE;
+    double to() default Double.MAX_VALUE;
+}
 JAVA
 cat > stubs/com/android/internal/logging/InstanceId.java <<'JAVA'
 package com.android.internal.logging;
@@ -72,6 +106,7 @@ public final class InstanceId {
 JAVA
 find stubs -name '*.java' >> "$ARTIFACT_DIR/iface_sources.txt"
 sort -u "$ARTIFACT_DIR/iface_sources.txt" -o "$ARTIFACT_DIR/iface_sources.txt"
+find stubs -name '*.java' | while read -r f; do printf '%s  %s 行\n' "$f" "$(wc -l < "$f")"; done | tee "$ARTIFACT_DIR/stubs.txt"
 N="$(wc -l < "$ARTIFACT_DIR/iface_sources.txt")"
 info "接口源文件数 = $N"
 [ "$N" -gt 0 ] || fail "接口源文件数为 0（修复 (c)：此处必须红，不得级联）"
