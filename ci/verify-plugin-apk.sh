@@ -234,7 +234,7 @@ else
   sudo chmod 666 /dev/kvm || fail "KVM 权限失败"
   # T-022：换**完整系统镜像**（ATD 无 SystemUI）；候选按序尝试，谁先装上用谁
   IMAGE=""
-  for cand in "system-images;android-34;google_apis;x86_64" "system-images;android-34;default;x86_64" "system-images;android-33;google_apis;x86_64" "system-images;android-34;aosp_atd;x86_64"; do
+  for cand in "system-images;android-34;default;x86_64" "system-images;android-33;default;x86_64" "system-images;android-34;google_apis;x86_64" "system-images;android-34;aosp_atd;x86_64"; do
     info "尝试镜像：$cand"
     if sdkmanager "platform-tools" "emulator" "$cand" > "$ARTIFACT_DIR/sdk_dev_$(echo "$cand" | tr ';' '_').log" 2>&1; then
       IMAGE="$cand"; printf 'IMAGE_USED=%s\n' "$cand" > "$ARTIFACT_DIR/image_used.txt"; info "== 采用镜像：$cand"; break
