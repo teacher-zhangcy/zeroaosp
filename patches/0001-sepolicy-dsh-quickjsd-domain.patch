@@ -1,0 +1,84 @@
+From 1ab0d2b2cd0b14583846fe2e76f20d6efaa2f594 Mon Sep 17 00:00:00 2001
+From: eng-infra <eng-infra@zeroaosp.invalid>
+Date: Thu, 8 Oct 2026 12:14:38 +0800
+Subject: [PATCH] =?UTF-8?q?=E8=AE=A9=20dsh=5Fquickjsd=20=E5=9C=A8=20enforc?=
+ =?UTF-8?q?ing=20=E4=B8=8B=E5=90=88=E6=B3=95=E6=B3=A8=E5=86=8C=20Binder=20?=
+ =?UTF-8?q?=E6=9C=8D=E5=8A=A1=EF=BC=9A=E5=90=A6=E5=88=99=E8=AF=A5=E6=9C=8D?=
+ =?UTF-8?q?=E5=8A=A1=E5=8F=AA=E8=83=BD=E9=9D=A0=20setenforce=200=20?=
+ =?UTF-8?q?=E6=89=8D=E8=83=BD=E6=B3=A8=E5=86=8C?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ private/dsh_quickjsd.te  | 30 ++++++++++++++++++++++++++++++
+ private/file_contexts    |  1 +
+ private/service.te       |  1 +
+ private/service_contexts |  1 +
+ 4 files changed, 33 insertions(+)
+ create mode 100644 private/dsh_quickjsd.te
+
+diff --git a/private/dsh_quickjsd.te b/private/dsh_quickjsd.te
+new file mode 100644
+index 0000000..dea8d16
+--- /dev/null
++++ b/private/dsh_quickjsd.te
+@@ -0,0 +1,30 @@
++# dsh_quickjsd — zeroaosp 插件运行时守护进程（M2 起承载 QuickJS 插件宿主）
++#
++# 为什么要独立域：它是常驻、需要向 servicemanager 注册、并被插件客户端调用的系统服务；
++# 既不属于 system_server，也不应复用 shell/su 这类过宽的域。AOSP 惯例：新守护进程 = 新域，
++# 类型命名 <daemon> / <daemon>_exec / <daemon>_service（对照 private/dnsmasq.te、private/statsd.te）。
++#
++# 命名说明：域取 dsh_quickjsd（M2 的插件运行时守护进程）；M1 冒烟服务 dsh_hello_service 是它的
++# 先行替身，正式二进制落 /system/bin/dsh_quickjsd，服务名在改名补丁落地前沿用 dsh_hello_service。
++
++typeattribute dsh_quickjsd coredomain;
++
++# init 起进程时做域转换（展开为 domain_auto_trans(init, dsh_quickjsd_exec, dsh_quickjsd)）
++init_daemon_domain(dsh_quickjsd)
++
++# 与 servicemanager 通信并注册我们的服务；
++# add_service 宏自带 neverallow：除 dsh_quickjsd 外任何域都不许向 dsh_quickjsd_service 上 add
++binder_use(dsh_quickjsd)
++add_service(dsh_quickjsd, dsh_quickjsd_service)
++
++# 服务被调用 / 被 dump：M1/M2 的观测手段是 adb shell 的 service list 与 dumpsys，
++# 正式形态下由具体客户端域承担（此处先只开 shell，范围最小）
++allow shell dsh_quickjsd_service:service_manager find;
++allow shell dsh_quickjsd_service:binder { call transfer };
++
++# 读/执行自己的可执行文件
++allow dsh_quickjsd dsh_quickjsd_exec:file rx_file_perms;
++
++# 基础运行：binder 线程池需要 fork，自身 binder 对象需要 call/transfer
++allow dsh_quickjsd self:process fork;
++allow dsh_quickjsd self:binder { call transfer };
+\ No newline at end of file
+diff --git a/private/file_contexts b/private/file_contexts
+index 258c6b4..b9ff383 100644
+--- a/private/file_contexts
++++ b/private/file_contexts
+@@ -874,3 +874,4 @@
+ /(system|product)/bin/check_dynamic_partitions  u:object_r:postinstall_exec:s0
+ /(system|product)/bin/otapreopt_script          u:object_r:postinstall_exec:s0
+ /(system|product)/bin/otapreopt                 u:object_r:postinstall_dexopt_exec:s0
++/system/bin/dsh_quickjsd			u:object_r:dsh_quickjsd_exec:s0
+diff --git a/private/service.te b/private/service.te
+index 3717150..9af7f05 100644
+--- a/private/service.te
++++ b/private/service.te
+@@ -22,3 +22,4 @@ type tracingproxy_service,          system_server_service, service_manager_type;
+ type transparency_service,          system_server_service, service_manager_type;
+ type uce_service,                   service_manager_type;
+ type wearable_sensing_service,      system_api_service, system_server_service, service_manager_type;
++type dsh_quickjsd_service,            service_manager_type;
+diff --git a/private/service_contexts b/private/service_contexts
+index 3bb9c85..20b0019 100644
+--- a/private/service_contexts
++++ b/private/service_contexts
+@@ -440,3 +440,4 @@ wifiaware                                 u:object_r:wifiaware_service:s0
+ wifirtt                                   u:object_r:rttmanager_service:s0
+ window                                    u:object_r:window_service:s0
+ *                                         u:object_r:default_android_service:s0
++dsh_hello_service                        u:object_r:dsh_quickjsd_service:s0
