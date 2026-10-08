@@ -1,0 +1,73 @@
+From 43b4086236e2eae82cec2ce7f80769d04d0891f5 Mon Sep 17 00:00:00 2001
+From: eng-infra <eng-infra@zeroaosp.invalid>
+Date: Thu, 8 Oct 2026 13:36:39 +0800
+Subject: [PATCH] =?UTF-8?q?=E5=9C=A8=20PMS=20=E5=B0=B1=E7=BB=AA=E5=90=8E?=
+ =?UTF-8?q?=E8=B0=83=E7=94=A8=E6=8F=92=E4=BB=B6=E8=A3=85=E9=85=8D=E5=99=A8?=
+ =?UTF-8?q?=EF=BC=9A=E5=90=A6=E5=88=99=E6=B3=A8=E5=86=8C=E8=A1=A8=E6=97=A0?=
+ =?UTF-8?q?=E4=BA=BA=E8=AF=BB=E5=8F=96=EF=BC=8C=E6=8F=92=E4=BB=B6=E6=B0=B8?=
+ =?UTF-8?q?=E8=BF=9C=E5=81=9C=E5=9C=A8=20discovered?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../java/com/android/server/SystemServer.java |  8 +++++
+ .../server/ZeroAospPluginAssembler.java       | 29 +++++++++++++++++++
+ 2 files changed, 37 insertions(+)
+ create mode 100644 services/java/com/android/server/ZeroAospPluginAssembler.java
+
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+index af84180..1c02541 100644
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -1245,6 +1245,14 @@ public final class SystemServer implements Dumpable {
+         } finally {
+             Watchdog.getInstance().resumeWatchingCurrentThread("packagemanagermain");
+         }
++        // zeroaosp P-01：插件装配入口（M2 骨架）。
++        // 位置依据：PMS 已就绪（原 :1242 之后）、startApexServices 之前（原 :3183 之前）；
++        // 失败只记日志、不阻断开机（插件是增强项，不是启动前提）。
++        try {
++            ZeroAospPluginAssembler.assemble(mSystemContext);
++        } catch (Throwable e) {
++            Slog.w(TAG, "zeroaosp: plugin assembly failed, continuing boot", e);
++        }
+ 
+         mFirstBoot = mPackageManagerService.isFirstBoot();
+         mPackageManager = mSystemContext.getPackageManager();
+diff --git a/services/java/com/android/server/ZeroAospPluginAssembler.java b/services/java/com/android/server/ZeroAospPluginAssembler.java
+new file mode 100644
+index 0000000..acbe425
+--- /dev/null
++++ b/services/java/com/android/server/ZeroAospPluginAssembler.java
+@@ -0,0 +1,29 @@
++/*
++ * zeroaosp P-01 骨架：插件装配器。
++ * M2 目标是在此完成"发现 → 装配 → 就绪"的状态迁移，并让状态可被 dumpsys 查询。
++ * 当前版本只做两件事：读注册表 + 打印条目数，供 M2 后续替换实现。
++ */
++package com.android.server;
++
++import android.content.ContentResolver;
++import android.content.Context;
++import android.provider.Settings;
++import android.util.Slog;
++
++/** @hide */
++public final class ZeroAospPluginAssembler {
++    private static final String TAG = "ZeroAospPluginAssembler";
++
++    private ZeroAospPluginAssembler() {}
++
++    /** 由 SystemServer 在 PMS 就绪后调用；当前只读注册表并记录条目是否存在。 */
++    public static void assemble(Context systemContext) {
++        ContentResolver cr = systemContext.getContentResolver();
++        String registry = Settings.Global.getZeroAospPluginRegistry(cr);
++        if (registry == null || registry.isEmpty()) {
++            Slog.i(TAG, "zeroaosp: plugin registry empty (assembled=0)");
++            return;
++        }
++        Slog.i(TAG, "zeroaosp: plugin registry present, bytes=" + registry.length());
++    }
++}
+\ No newline at end of file

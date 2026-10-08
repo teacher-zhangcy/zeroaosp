@@ -1,0 +1,52 @@
+From a2eb2025f13d7c85130fa701b879f0049aa6202c Mon Sep 17 00:00:00 2001
+From: eng-infra <eng-infra@zeroaosp.invalid>
+Date: Thu, 8 Oct 2026 13:36:38 +0800
+Subject: [PATCH] =?UTF-8?q?=E5=A2=9E=E5=8A=A0=E6=8F=92=E4=BB=B6=E6=B3=A8?=
+ =?UTF-8?q?=E5=86=8C=E8=A1=A8=E7=9A=84=E8=AF=BB=E5=86=99=E9=80=9A=E8=B7=AF?=
+ =?UTF-8?q?=EF=BC=9A=E5=90=A6=E5=88=99=E8=A3=85=E9=85=8D=E5=99=A8=E6=97=A0?=
+ =?UTF-8?q?=E4=BB=8E=E8=AF=BB=E5=8F=96=E6=8F=92=E4=BB=B6=E6=9D=A1=E7=9B=AE?=
+ =?UTF-8?q?=EF=BC=8CM2=20=E7=9A=84=E5=8F=91=E7=8E=B0/=E8=A3=85=E9=85=8D?=
+ =?UTF-8?q?=E5=8F=AA=E8=83=BD=E7=A1=AC=E7=BC=96=E7=A0=81?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ core/java/android/provider/Settings.java | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/core/java/android/provider/Settings.java b/core/java/android/provider/Settings.java
+index d695c0c..9057286 100644
+--- a/core/java/android/provider/Settings.java
++++ b/core/java/android/provider/Settings.java
+@@ -11723,7 +11723,29 @@ public final class Settings {
+      * explicitly modify through the system UI or specialized APIs for those values.
+      */
+     public static final class Global extends NameValueTable {
+-        // NOTE: If you add new settings here, be sure to add them to
++
++        /**
++         * zeroaosp P-03：插件注册表的持久化条目名。
++         * 表内值是装配器可读的 JSON 文本（条目数组：id / 路径 / 状态）。
++         * @hide
++         */
++        public static final String ZEROAOSP_PLUGIN_REGISTRY = "zeroaosp_plugin_registry";
++
++        /**
++         * zeroaosp P-03：读取插件注册表（只读通路）。未写入过时返回 null。
++         * @hide
++         */
++        public static String getZeroAospPluginRegistry(ContentResolver cr) {
++            return getString(cr, ZEROAOSP_PLUGIN_REGISTRY);
++        }
++
++        /**
++         * zeroaosp P-03：最小写入通路（由 SettingsProvider 的既有权限校验负责鉴权）。
++         * @hide
++         */
++        public static boolean putZeroAospPluginRegistry(ContentResolver cr, String json) {
++            return putString(cr, ZEROAOSP_PLUGIN_REGISTRY, json);
++        }        // NOTE: If you add new settings here, be sure to add them to
+         // com.android.providers.settings.SettingsProtoDumpUtil#dumpProtoGlobalSettingsLocked.
+ 
+         /**

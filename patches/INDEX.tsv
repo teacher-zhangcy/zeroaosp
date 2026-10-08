@@ -1,2 +1,4 @@
 id	area	status	target_paths	rationale	upstream_rev	added_project	author	added
 0001	sepolicy	accepted	system/sepolicy/private/dsh_quickjsd.te,system/sepolicy/private/file_contexts,system/sepolicy/private/service.te,system/sepolicy/private/service_contexts	让 dsh_quickjsd 在 enforcing 下合法注册 Binder 服务：否则该服务只能靠 setenforce 0 才能注册	refs/tags/android-14.0.0_r1	-	eng-infra	2026-10-08
+0002	common	accepted	frameworks/base/core/java/android/provider/Settings.java	增加插件注册表读写通路：否则装配器无从读取插件条目，只能硬编码	refs/tags/android-14.0.0_r1	-	eng-infra	2026-10-08
+0003	common	accepted	frameworks/base/services/java/com/android/server/SystemServer.java,frameworks/base/services/java/com/android/server/ZeroAospPluginAssembler.java	在 PMS 就绪后调用插件装配器：否则注册表无人读取，插件永远停在 discovered	refs/tags/android-14.0.0_r1	-	eng-infra	2026-10-08
