@@ -45,14 +45,33 @@ info "build-tools=$BT"; info "android.jar=$AJ"
 mark "STAGE2_OK bt=$BT"
 
 step "3. 接口源码 → javac → jar（修复 (c)：0 个源文件必须红）"
-# ① 收窄：只编「插件契约 + 注解 + qs 三个文件 + 隐藏 API 来源」
-# ② 补隐藏 API：android.annotation.*（@Nullable 等）来自 base/core/java，其源码一起编进 classpath
+# ① 源文件清单（**本地核对过**：annotations 与 Plugin.java 都在 plugin_core，不在 plugin/src）
 {
-  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/Plugin.java
-  find base/packages/SystemUI/plugin/src/com/android/systemui/plugins/annotations -name '*.java'
+  echo base/packages/SystemUI/plugin_core/src/com/android/systemui/plugins/Plugin.java
+  find base/packages/SystemUI/plugin_core/src/com/android/systemui/plugins/annotations -name '*.java'
   find base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs -name '*.java'
+  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/FragmentBase.java
   find base/core/java/android/annotation -name '*.java'
-} | sort -u > "$ARTIFACT_DIR/iface_sources.txt"
+} > "$ARTIFACT_DIR/iface_sources.txt"
+# ② 编译期桩：androidx 注解与 framework 内部类（只为过 javac；运行期用设备上的真类）
+mkdir -p stubs/androidx/annotation stubs/com/android/internal/logging
+cat > stubs/androidx/annotation/Nullable.java <<'JAVA'
+package androidx.annotation;
+public @interface Nullable {}
+JAVA
+cat > stubs/androidx/annotation/FloatRange.java <<'JAVA'
+package androidx.annotation;
+public @interface FloatRange { double from() default -Double.MAX_VALUE; double to() default Double.MAX_VALUE; }
+JAVA
+cat > stubs/com/android/internal/logging/InstanceId.java <<'JAVA'
+package com.android.internal.logging;
+public final class InstanceId {
+    public static InstanceId create() { throw new UnsupportedOperationException("compile-time stub"); }
+    public long getId() { throw new UnsupportedOperationException("compile-time stub"); }
+}
+JAVA
+find stubs -name '*.java' >> "$ARTIFACT_DIR/iface_sources.txt"
+sort -u "$ARTIFACT_DIR/iface_sources.txt" -o "$ARTIFACT_DIR/iface_sources.txt"
 N="$(wc -l < "$ARTIFACT_DIR/iface_sources.txt")"
 info "接口源文件数 = $N"
 [ "$N" -gt 0 ] || fail "接口源文件数为 0（修复 (c)：此处必须红，不得级联）"
@@ -145,7 +164,42 @@ sha256sum "$ARTIFACT_DIR/zeroaosp-qs-plugin.apk" | tee "$ARTIFACT_DIR/apk.sha256
 mark "STAGE6_OK"
 printf 'VERDICT=BUILD_OK\n' >> "$ARTIFACT_DIR/verdict.txt"
 
-step "7. 小结"
+step "6b. 实机：装到 emulator → 重启 → logcat 正例/负例（有 APK 才跑）"
+APK="$ARTIFACT_DIR/zeroaosp-qs-plugin.apk"
+if [ ! -f "$APK" ]; then
+  info "APK 不存在 → 跳过实机（上一级已给原始报错）"; mark "STAGE6B_SKIPPED_NO_APK"
+else
+  IMAGE="${IMAGE:-system-images;android-34;aosp_atd;x86_64}"
+  sudo chmod 666 /dev/kvm || fail "KVM 权限失败"
+  sdkmanager "platform-tools" "emulator" "$IMAGE" > "$ARTIFACT_DIR/sdk_dev.log" 2>&1 || fail "装 emulator/镜像失败"
+  ADB="$SDK/platform-tools/adb"
+  EMU_BIN="$(command -v emulator || find "$SDK" -maxdepth 3 -type f -name emulator | head -1)"
+  ( echo no | avdmanager create avd --force -n nag -k "$IMAGE" --device pixel_5 ) >/dev/null 2>&1 || true
+  nohup "$EMU_BIN" -avd nag -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 3072 -cores 2 > "$ARTIFACT_DIR/emulator.log" 2>&1 &
+  sleep 20; "$ADB" start-server >/dev/null 2>&1 || true; timeout 120 "$ADB" wait-for-device || true
+  BOOT=""; for i in $(seq 1 40); do BOOT="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"; [ "$BOOT" = "1" ] && break; sleep 10; done
+  [ "$BOOT" = "1" ] || fail "模拟器未启动完成"
+  "$ADB" shell getprop ro.build.type | tee "$ARTIFACT_DIR/build_type.txt"
+  # 负例：插件未装
+  "$ADB" logcat -c >/dev/null 2>&1 || true
+  sleep 5
+  "$ADB" logcat -d -s DshQsTile:* > "$ARTIFACT_DIR/logcat_negative.txt" 2>&1 || true
+  info "负例 logcat 行数 = $(wc -l < "$ARTIFACT_DIR/logcat_negative.txt")"
+  # 安装插件
+  "$ADB" install -r -g "$APK" | tee "$ARTIFACT_DIR/adb_install.txt"
+  "$ADB" shell pm path com.zeroaosp.plugin | tee "$ARTIFACT_DIR/pm_path.txt" || true
+  # 重启 → 正例
+  "$ADB" reboot >/dev/null 2>&1 || true; sleep 25; "$ADB" wait-for-device || true
+  for i in $(seq 1 40); do BOOT="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"; [ "$BOOT" = "1" ] && break; sleep 10; done
+  sleep 25
+  "$ADB" logcat -d -s DshQsTile:* > "$ARTIFACT_DIR/logcat_positive.txt" 2>&1 || true
+  info "正例 logcat 行数 = $(wc -l < "$ARTIFACT_DIR/logcat_positive.txt")"
+  head -10 "$ARTIFACT_DIR/logcat_positive.txt" | sed 's/^/    /'
+  "$ADB" logcat -d | grep -i -m8 'zeroaosp\|PluginManager' > "$ARTIFACT_DIR/logcat_pluginmgr.txt" 2>&1 || true
+  "$ADB" exec-out screencap -p > "$ARTIFACT_DIR/screen.png" 2>/dev/null || true
+  info "截图 → $ARTIFACT_DIR/screen.png（**辅助、M1 未落证通道**）"
+  mark "STAGE6B_OK"
+fi
 printf '\n--- stages.log ---\n'; cat "$ARTIFACT_DIR/stages.log" | sed 's/^/  /'
 printf '\n--- verdict.txt ---\n'; cat "$ARTIFACT_DIR/verdict.txt" | sed 's/^/  /'
 printf '\n✅ APK 编译链全绿（%ss）\n' "$(( $(date +%s) - T0 ))"
