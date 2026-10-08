@@ -47,13 +47,11 @@ mark "STAGE2_OK bt=$BT"
 step "3. 接口源码 → javac → jar（修复 (c)：0 个源文件必须红）"
 # ① 源文件清单（只留实现真正需要的契约；**(c) 去掉 QS.java**——它多带依赖，我们只用 QSFactory/QSTile/QSTileView/QSIconView）
 {
-  echo base/packages/SystemUI/plugin_core/src/com/android/systemui/plugins/Plugin.java
+  # T-030 第 2 步：一次补齐 —— plugin_core 的 Plugin + annotations 全量，plugin/src 的 qs/** 全量（除 QS.java，它拖 SystemUI 内部依赖）
+  find base/packages/SystemUI/plugin_core/src/com/android/systemui/plugins -maxdepth 1 -name 'Plugin.java'
   find base/packages/SystemUI/plugin_core/src/com/android/systemui/plugins/annotations -name '*.java'
-  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSFactory.java
-  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSTile.java
-  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSTileView.java
-  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSIconView.java
-  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/FragmentBase.java
+  find base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs -name '*.java' ! -name 'QS.java'
+  find base/packages/SystemUI/plugin/src/com/android/systemui/plugins -maxdepth 1 -name 'FragmentBase.java'
 } > "$ARTIFACT_DIR/iface_sources.txt"
 # ② 编译期桩（**(a)(b)**：全部 public；只为过 javac —— 运行期仍解析到设备上的真类）
 mkdir -p stubs/android/annotation stubs/android/metrics stubs/androidx/annotation stubs/com/android/internal/logging
@@ -260,8 +258,15 @@ else
   # 每时机固定 5 个产物
   collect() {
     t="$1"
-    "$ADB" logcat -d -v time > "$ARTIFACT_DIR/logcat_full_$t.txt" 2>&1 || true
-    grep -iE "PluginManager|PluginActionManager|Found .*plugins|zeroaosp|DshQsTile" "$ARTIFACT_DIR/logcat_full_$t.txt" > "$ARTIFACT_DIR/logcat_filtered_$t.txt" 2>&1 || true
+    # T-030 第 3 步：采集缺陷修复 —— 全量档保持；过滤串**追加 AndroidRuntime**（否则 FATAL EXCEPTION 与
+    #   "<异常类名>: <message>" 两行不命中，T-027/028 就是这样只看得到栈帧的）
+    "$ADB" shell logcat -d -v time > "$ARTIFACT_DIR/logcat_full_$t.txt" 2>&1 || true
+    SPID_T="$("$ADB" shell pidof com.android.systemui 2>/dev/null | tr -d '\r' | awk '{print $1}')" || true
+    if [ -n "$SPID_T" ]; then
+      "$ADB" shell logcat -d -v time --pid="$SPID_T" > "$ARTIFACT_DIR/logcat_pid_$t.txt" 2>&1 || true
+    fi
+    grep -iE "PluginManager|PluginActionManager|Found .*plugins|zeroaosp|DshQsTile|AndroidRuntime" "$ARTIFACT_DIR/logcat_full_$t.txt" > "$ARTIFACT_DIR/logcat_filtered_$t.txt" 2>&1 || true
+    grep -E 'FATAL EXCEPTION|InvalidVersionException|Missing required|Caused by|AndroidRuntime' "$ARTIFACT_DIR/logcat_full_$t.txt" | head -12 > "$ARTIFACT_DIR/logcat_exception_$t.txt" 2>&1 || true
     "$ADB" shell dumpsys package com.zeroaosp.plugin > "$ARTIFACT_DIR/dumpsys_package_$t.txt" 2>&1 || true
     "$ADB" shell cmd package query-services -a com.android.systemui.action.PLUGIN_QS_FACTORY > "$ARTIFACT_DIR/query_services_$t.txt" 2>&1 \
       || "$ADB" shell pm query-services -a com.android.systemui.action.PLUGIN_QS_FACTORY > "$ARTIFACT_DIR/query_services_$t.txt" 2>&1 || true
