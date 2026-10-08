@@ -181,8 +181,11 @@ mark "STAGE5_OK dex=$(stat -c%s out-dex/classes.dex)"
 step "6. aapt2 → zipalign → 签名"
 mkdir -p out-apk
 "$SDK/build-tools/$BT/aapt2" link -o out-apk/unsigned.apk --manifest plugin-res/AndroidManifest.xml \
-  --min-sdk-version 26 --target-sdk-version 34 -I "$AJ" out-dex > "$ARTIFACT_DIR/aapt2.log" 2>&1 \
+  --min-sdk-version 26 --target-sdk-version 34 -I "$AJ" > "$ARTIFACT_DIR/aapt2.log" 2>&1 \
   || { tail -8 "$ARTIFACT_DIR/aapt2.log" | sed 's/^/    /'; fail "aapt2 link 失败"; }
+# aapt2 不打包 dex：classes.dex 要用 zip 塞进 APK（标准做法；上一轮传目录导致 "Is a directory"）
+( cd out-dex && zip -q -j ../out-apk/unsigned.apk classes.dex ) || fail "把 classes.dex 塞进 APK 失败"
+info "aapt2 link + dex 打包 OK：$(stat -c%s out-apk/unsigned.apk) B"
 KS="$ARTIFACT_DIR/debug.keystore"
 keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias androiddebugkey \
   -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000 > "$ARTIFACT_DIR/keytool.log" 2>&1 \
