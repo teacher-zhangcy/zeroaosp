@@ -52,6 +52,8 @@ step "3. 接口源码 → javac → jar（修复 (c)：0 个源文件必须红�
   find base/packages/SystemUI/plugin_core/src/com/android/systemui/plugins/annotations -name '*.java'
   find base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs -name '*.java' ! -name 'QS.java'
   find base/packages/SystemUI/plugin/src/com/android/systemui/plugins -maxdepth 1 -name 'FragmentBase.java'
+  # T-037 第二刀：OverlayPlugin 接口必须进源集（T-036 的 javac 失败根因就是 cannot find symbol）
+  echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/OverlayPlugin.java
 } > "$ARTIFACT_DIR/iface_sources.txt"
 # ② 编译期桩（**(a)(b)**：全部 public；只为过 javac —— 运行期仍解析到设备上的真类）
 mkdir -p stubs/android/annotation stubs/android/metrics stubs/androidx/annotation stubs/com/android/internal/logging
@@ -450,15 +452,23 @@ package com.zeroaosp.plugin.overlay;
 
 import android.content.Context;
 import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.TextView;
 import com.android.systemui.plugins.OverlayPlugin;
 import com.android.systemui.plugins.annotations.ProvidesInterface;
 import com.android.systemui.plugins.annotations.Requires;
 
-/** zeroaosp M2 第二刀：shade 扩展帧（OverlayPlugin 通道）。范式照 SampleOverlayPlugin.java:29-41。 */
+/**
+ * zeroaosp M2 第二刀：OverlayPlugin 覆盖层。范式照 SampleOverlayPlugin.java:29-41。
+ * 契约（research-x 已核实）：OverlayPlugin.java:24 ACTION=com.android.systemui.action.PLUGIN_OVERLAY、VERSION=4；
+ *   :30 void setup(View statusBar, View navBar)；
+ * 通道在用：CentralSurfacesImpl.java:1148-1191 注册 PluginListener<OverlayPlugin>（allow multiple）。
+ */
 @ProvidesInterface(action = OverlayPlugin.ACTION, version = OverlayPlugin.VERSION)
 @Requires(target = OverlayPlugin.class, version = OverlayPlugin.VERSION)
 public class ZeroAospOverlayPlugin implements OverlayPlugin {
-    public static final String TAG = "DshShade";
+    public static final String TAG = "DshOverlay";
 
     public ZeroAospOverlayPlugin() {
         Log.i(TAG, "slot state=PLUGIN_LOADED cls=" + getClass().getName());
@@ -466,13 +476,27 @@ public class ZeroAospOverlayPlugin implements OverlayPlugin {
 
     @Override
     public void onCreate(Context sysuiContext, Context pluginContext) {
-        Log.i(TAG, "slot state=PLUGIN_VIEW onCreate sysuiCtx=" + (sysuiContext != null)
+        Log.i(TAG, "slot state=PLUGIN_LOADED onCreate sysuiCtx=" + (sysuiContext != null)
                 + " pluginCtx=" + (pluginContext != null));
     }
 
     @Override
-    public void onDestroy() {
-        Log.i(TAG, "slot state=PLUGIN_VIEW onDestroy");
+    public void setup(View statusBar, View navBar) {
+        Log.i(TAG, "slot state=OVERLAY_SETUP statusBar=" + (statusBar != null) + " navBar=" + (navBar != null));
+        if (statusBar != null) {
+            try {
+                TextView tv = new TextView(statusBar.getContext());
+                tv.setText("ZEROAOSP-OVERLAY");
+                if (statusBar instanceof ViewGroup) {
+                    ((ViewGroup) statusBar).addView(tv);
+                    Log.i(TAG, "slot state=OVERLAY_ADDED text=" + tv.getText() + " parent=" + statusBar.getClass().getName());
+                } else {
+                    Log.w(TAG, "slot state=OVERLAY_ADD_SKIPPED statusBar 不是 ViewGroup: " + statusBar.getClass().getName());
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "slot state=OVERLAY_ADD_FAILED", t);
+            }
+        }
     }
 
     public int getVersion() { return OverlayPlugin.VERSION; }
