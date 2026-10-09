@@ -54,6 +54,8 @@ step "3. 接口源码 → javac → jar（修复 (c)：0 个源文件必须红�
   find base/packages/SystemUI/plugin/src/com/android/systemui/plugins -maxdepth 1 -name 'FragmentBase.java'
   # T-037 第二刀：OverlayPlugin 接口必须进源集（T-036 的 javac 失败根因就是 cannot find symbol）
   echo base/packages/SystemUI/plugin/src/com/android/systemui/plugins/OverlayPlugin.java
+  # 该接口自身依赖 plugins.statusbar 包（OverlayPlugin.java:19: package com.android.systemui.plugins.statusbar does not exist）→ 一并进源集
+  find base/packages/SystemUI/plugin/src/com/android/systemui/plugins/statusbar -name '*.java'
 } > "$ARTIFACT_DIR/iface_sources.txt"
 # ② 编译期桩（**(a)(b)**：全部 public；只为过 javac —— 运行期仍解析到设备上的真类）
 mkdir -p stubs/android/annotation stubs/android/metrics stubs/androidx/annotation stubs/com/android/internal/logging
