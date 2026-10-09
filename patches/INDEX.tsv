@@ -3,3 +3,22 @@ id	area	status	target_paths	rationale	upstream_rev	added_project	author	added
 0002	common	accepted	frameworks/base/core/java/android/provider/Settings.java	增加插件注册表读写通路：否则装配器无从读取插件条目，只能硬编码	refs/tags/android-14.0.0_r1	-	eng-infra	2026-10-08
 0003	common	accepted	frameworks/base/services/java/com/android/server/SystemServer.java,frameworks/base/services/java/com/android/server/ZeroAospPluginAssembler.java	在 PMS 就绪后调用插件装配器：否则注册表无人读取，插件永远停在 discovered	refs/tags/android-14.0.0_r1	-	eng-infra	2026-10-08
 0004	common	accepted	frameworks/base/services/java/com/android/server/SystemServer.java,frameworks/base/services/java/com/android/server/ZeroAospPluginRegistryService.java	增加插件注册表的只读查询面：否则注册表只有 SettingsProvider 内部可见，M2 的装配状态无法自证	refs/tags/android-14.0.0_r1	-	eng-infra	2026-10-08
+0101	pkg	proposed	frameworks/base/services/java/com/android/server/SystemServer.java	装配点：在 startBootstrapServices 之后装载插件注册表：否则插件在装配期不被发现	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0102	pkg	proposed	frameworks/base/services/java/com/android/server/SystemServer.java	装配点：在 startApexServices 之前装配宿主槽位：否则晚于 sealStartedServices 被拒	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0103	pkg	proposed	frameworks/base/services/core/java/com/android/server/pm/InitAppsHelper.java	系统扫描尾部接入插件包发现：否则插件包不进系统扫描链，重启也不可见	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0104	pkg	proposed	frameworks/base/services/core/java/com/android/server/pm/InitAppsHelper.java	插件发现复用既有 ScanPartition 机制：否则另造扫描路径，改动面失控	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0105	pkg	proposed	frameworks/base/services/core/java/com/android/server/pm/Settings.java	新增插件注册表读入：否则重启后插件清单丢失，装配无从下手	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0106	pkg	proposed	frameworks/base/services/core/java/com/android/server/pm/Settings.java	新增插件注册表落盘：否则装卸结果不持久，重启即回到旧集合	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0107	pkg	proposed	frameworks/base/services/core/java/com/android/server/pm/Settings.java	注册表沿用 ResilientAtomicFile 三件套：否则断电留下半写表，注册表不可信	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0108	pkg	proposed	frameworks/base/services/core/java/com/android/server/pm/Settings.java	注册表写入并入 packages.xml 同一写盘点：否则出现半装态无法回滚	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0109	pkg	proposed	frameworks/base/services/core/java/com/android/server/pm/PackageManagerService.java	暴露注册表只读访问面：否则宿主在装配期拿不到插件清单	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0110	pkg	proposed	frameworks/base/services/core/java/com/android/server/pm/PackageManagerService.java	卸载路径挂回收钩子：否则卸载后残留项无人回收	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0111	pkg	proposed	frameworks/base/core/java/android/content/pm/PackagePartitions.java	插件分区目录登记：否则独立分区里的插件不进系统扫描链	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0112	pkg	proposed	frameworks/base/data/etc/privapp-permissions-dsh_plugin.xml	特权白名单随插件入册：否则 enforce 下 boot 期抛异常，system_server 起不来	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0113	common	proposed	system/sepolicy/private/seapp_contexts	插件容器域映射：否则容器进程只能落 untrusted_app 域，拿不到特权域	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0114	sepolicy	proposed	system/sepolicy/private/dsh_plugin_host.te	容器域最小策略：否则新域无任何 allow 规则，容器启动即被拒	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0115	sepolicy	proposed	system/sepolicy/private/file_contexts	插件数据路径标签：否则数据落默认标签，域访问被 SELinux 拒	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0116	sepolicy	proposed	system/sepolicy/apex/dsh_plugin_host-file_contexts	APEX 内文件标签随包携带：否则装箱后标签与策略不一致	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0117	build	proposed	build/soong/java/app.go	新增安装目录或形态支持：否则插件包落不到目标分区，白名单与标签对不上	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0118	pkg	proposed	system/core/rootdir/init.rc	插件数据目录 mkdir/restorecon：否则首次启动目录缺标签，插件写不进去	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
+0119	pkg	proposed	system/core/init/builtins.cpp	init 维护插件数据目录：否则目录由进程自建，标签与属主不受控	refs/tags/android-14.0.0_r1	-	research-pkg	2026-10-07
