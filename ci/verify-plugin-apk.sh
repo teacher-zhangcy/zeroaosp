@@ -419,19 +419,28 @@ else
   set -e
   mark "STAGE6D_OK"
   set -e
-  # T-032 ① 第一刀回归断言（负向对照 = INJECT_FAILURE 那套：注入失败必须让 job 真红）
-  set -e
-  step "6e. 第一刀回归断言"
-  grep -q 'PLUGIN_FILLED' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：platform 采集里没有 PLUGIN_FILLED"
-  grep -q 'createTile spec=' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：createTile spec= 未出现"
-  grep -q 'PLUGIN_LOADED' "$ARTIFACT_DIR/logcat_filtered_platform.txt" || fail "断言(a) 失败：PLUGIN_LOADED 未出现"
-  RESID="$(grep -c 'DshQsTile' "$ARTIFACT_DIR/reverted_check.txt" 2>/dev/null | head -1)"
-  RESID="${RESID:-0}"
-  case "$RESID" in ''|*[!0-9]*) RESID=0;; esac
-  [ "$RESID" -eq 0 ] || fail "断言(b) 失败：卸载后仍有 $RESID 行 DshQsTile 残留"
-  printf 'ASSERT_1_PLUGIN_FILLED_AND_CREATETILE=OK\nASSERT_2_REVERTED_ZERO=OK\n' >> "$ARTIFACT_DIR/verdict.txt"
-  info "✅ 断言全过：PLUGIN_LOADED+PLUGIN_FILLED+createTile spec= ✓ ；卸载后可逆归零（残留 0 行）✓"
-  mark "STAGE6E_OK"
+  step "6e. 采集收尾（T-036：判定已搬出 CI —— 本段只保证采集原件与元数据齐全）"
+  # 硬失败只剩三类（都在本段之前）：编译失败、adb/emulator 不可用、SystemUI 不在场。
+  # 判定标准一字未改，只是搬到本地：_verify/assert_first_cut.ps1 -ArtifactDir <artifact 目录>
+  for need in logcat_full_platform.txt logcat_filtered_platform.txt query_services_platform.txt reverted_check.txt stages.log verdict.txt; do
+    [ -f "$ARTIFACT_DIR/$need" ] || fail "采集缺件：$need（硬失败）"
+  done
+  {
+    printf 'commit=%s\n' "${GITHUB_SHA:-local}"
+    printf 'image=%s\n' "$(cat "$ARTIFACT_DIR/image_used.txt" 2>/dev/null | head -1 | tr -d '\n')"
+    printf 'generated_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'workflow_run=%s\n' "${GITHUB_RUN_ID:-local}"
+    printf 'artifact_dir=%s\n' "$ARTIFACT_DIR"
+  } > "$ARTIFACT_DIR/run-meta.txt"
+  grep -q '^commit=' "$ARTIFACT_DIR/run-meta.txt" || fail "run-meta.txt 缺 commit"
+  grep -q '^image=' "$ARTIFACT_DIR/run-meta.txt" || fail "run-meta.txt 缺 image"
+  grep -q '^generated_utc=' "$ARTIFACT_DIR/run-meta.txt" || fail "run-meta.txt 缺 generated_utc"
+  printf 'COLLECT_ONLY=1\n' >> "$ARTIFACT_DIR/verdict.txt"
+  cat "$ARTIFACT_DIR/run-meta.txt" | sed 's/^/    /'
+  info "采集完成（判定在本地：_verify/assert_first_cut.ps1 -ArtifactDir <artifact 目录>）"
+  mark "STAGE6E_COLLECT_OK"
+  # 从这行起不再做任何判定：6f 只采集第二刀证据
+  set +e
   # T-033 第二刀：OverlayPlugin（shade 扩展帧通道）—— 非致命段：不管成败都不影响第一刀闸门
   step "6f. 第二刀：OverlayPlugin（S4 shade 扩展帧通道）"
   set +e
